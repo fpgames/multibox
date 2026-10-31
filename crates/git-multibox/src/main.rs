@@ -4,9 +4,10 @@
 //! every other subcommand is handed to git unchanged.
 
 use multibox_core::{
-    AddOptions, InitOptions, InitOutcome, Level, MigrateOptions, Mode, Mount, Observer, Progress,
-    RemoveOptions, SetupOptions, adapter, add, diagnose, git, init, migrate, plan_setup,
-    purge_trash, remove, run_setup, spawn_detached, sweep_trash, switch,
+    AddOptions, FinishOptions, FinishOutcome, InitOptions, InitOutcome, Level, MigrateOptions,
+    Mode, Mount, Observer, Progress, RemoveOptions, SetupOptions, adapter, add, diagnose, finish,
+    git, init, migrate, plan_setup, purge_trash, remove, run_setup, spawn_detached, sweep_trash,
+    switch,
 };
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -18,6 +19,7 @@ use std::time::{Duration, Instant};
 const USAGE: &str = "\
 usage: git multibox add [<options>] <path> [<commit-ish>]
        git multibox remove [-f] <worktree>
+       git multibox finish [--keep-branch] [--wait] [--json] <worktree> [-- <merge options>]
        git multibox <list|lock|move|prune|repair|unlock> ...
        git multibox init [--project <path>] [--to <path>] [--exclude <path>]... [--dry-run]
        git multibox doctor [--json]
@@ -36,6 +38,14 @@ Multibox-specific options for add:
     --json              print the result as JSON on stdout
 
 Options for remove:
+    --wait              delete in the foreground instead of in the background
+    --json              print the result as JSON on stdout
+
+finish merges the worktree's branch into the branch checked out here, then
+removes the worktree and the merged branch. It stops before changing anything
+if work is uncommitted or an editor has the worktree open, and leaves a merge
+that hits conflicts in progress, as git does. Run it again once committed.
+    --keep-branch       keep the branch after merging it
     --wait              delete in the foreground instead of in the background
     --json              print the result as JSON on stdout
 
@@ -273,8 +283,15 @@ fn run_remove(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
         });
         println!("{value}");
     }
+    purge_removed(cwd, outcome.trash, wait)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Deletes what a removal moved aside, with any earlier leftovers: in the
+/// foreground with `wait`, otherwise in a detached process.
+fn purge_removed(cwd: &Path, trash: Option<PathBuf>, wait: bool) -> Result<(), String> {
     let mut leftovers = sweep_trash(cwd);
-    if let Some(trash) = outcome.trash {
+    if let Some(trash) = trash {
         leftovers.retain(|path| path != &trash);
         leftovers.push(trash);
     }
@@ -291,7 +308,96 @@ fn run_remove(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
             );
         }
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(())
+}
+
+fn run_finish(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
+    let mut options = FinishOptions {
+        path: String::new(),
+        keep_branch: false,
+        merge_args: Vec::new(),
+    };
+    let (mut wait, mut json) = (false, false);
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--keep-branch" => options.keep_branch = true,
+            "--wait" => wait = true,
+            "--json" => json = true,
+            "--" => options.merge_args.extend(args.by_ref()),
+            flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
+            _ if options.path.is_empty() => options.path = arg,
+            _ => return Err("finish takes one <worktree>".to_owned()),
+        }
+    }
+    if options.path.is_empty() {
+        return Err("finish needs a <worktree>".to_owned());
+    }
+    match finish(cwd, &options).map_err(|err| err.to_string())? {
+        FinishOutcome::Conflicts {
+            branch,
+            into,
+            files,
+        } => {
+            if json {
+                let value = serde_json::json!({
+                    "branch": branch,
+                    "into": into,
+                    "finished": false,
+                    "conflicts": files,
+                });
+                println!("{value}");
+            } else {
+                eprintln!("multibox: merging '{branch}' into '{into}' stopped on conflicts:");
+                for file in &files {
+                    eprintln!("  {file}");
+                }
+                eprintln!(
+                    "Resolve them and commit, then run `git multibox finish {}` again to clean up. `git merge --abort` undoes the merge.",
+                    options.path
+                );
+            }
+            Ok(ExitCode::from(1))
+        }
+        FinishOutcome::Finished {
+            branch,
+            into,
+            merged_now,
+            merge_output,
+            removal,
+            branch_deleted,
+        } => {
+            if json {
+                let value = serde_json::json!({
+                    "branch": branch,
+                    "into": into,
+                    "finished": true,
+                    "merged_now": merged_now,
+                    "removed": removal.path,
+                    "branch_deleted": branch_deleted,
+                });
+                println!("{value}");
+            } else {
+                print!("{merge_output}");
+                let how = if merged_now {
+                    "merged"
+                } else {
+                    "was already merged"
+                };
+                let deleted = if branch_deleted {
+                    ", branch deleted"
+                } else {
+                    ""
+                };
+                eprintln!(
+                    "multibox: '{branch}' {how} into '{into}'; removed {}{deleted}",
+                    removal.path.display()
+                );
+            }
+            purge_removed(cwd, removal.trash, wait)?;
+            Ok(ExitCode::SUCCESS)
+        }
+    }
 }
 
 fn level_name(level: Level) -> &'static str {
@@ -582,6 +688,7 @@ fn run() -> Result<ExitCode, String> {
     match subcommand.as_str() {
         "add" => run_add(&cwd, args),
         "remove" => run_remove(&cwd, args),
+        "finish" => run_finish(&cwd, args),
         "doctor" => run_doctor(&cwd, &args),
         "env" => run_env(&cwd, &args),
         "setup" => run_setup_command(args),

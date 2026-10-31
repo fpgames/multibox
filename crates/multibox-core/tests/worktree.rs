@@ -1,6 +1,9 @@
 //! End-to-end tests against real git repositories in temporary directories.
 
-use multibox_core::{AddOptions, Mode, Observer, RemoveOptions, add, git, purge_trash, remove};
+use multibox_core::{
+    AddOptions, FinishOptions, FinishOutcome, Mode, Observer, RemoveOptions, add, finish, git,
+    purge_trash, remove,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -1064,4 +1067,174 @@ fn verified_build_info_inside_node_modules_survives_the_copy_mode_refusal() {
     assert!(!wt.join("node_modules/left-pad").exists());
     assert!(!wt.join("node_modules/.modules.yaml").exists());
     assert!(!wt.join("apps/site/node_modules").exists());
+}
+
+fn finish_options(path: &str) -> FinishOptions {
+    FinishOptions {
+        path: path.to_owned(),
+        keep_branch: false,
+        merge_args: Vec::new(),
+    }
+}
+
+fn commit_all(dir: &Path, message: &str) {
+    sh(dir, &["add", "-A"]);
+    sh(dir, &["commit", "-q", "-m", message]);
+}
+
+fn finished(outcome: FinishOutcome) -> (bool, bool) {
+    match outcome {
+        FinishOutcome::Finished {
+            merged_now,
+            removal,
+            branch_deleted,
+            ..
+        } => {
+            if let Some(trash) = removal.trash {
+                purge_trash(&trash).unwrap();
+            }
+            (merged_now, branch_deleted)
+        }
+        other => panic!("not finished: {other:?}"),
+    }
+}
+
+#[test]
+fn finish_merges_the_branch_and_cleans_up() {
+    let (_temp, repo) = unity_repo();
+    add(&repo, &options("../wt", &["-b", "task"]), &Silent).unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+    write(&wt, "client/Assets/new.txt", "from the task\n");
+    commit_all(&wt, "task work");
+
+    let (merged_now, branch_deleted) = finished(finish(&repo, &finish_options("../wt")).unwrap());
+    assert!(merged_now && branch_deleted);
+    assert_eq!(
+        fs::read_to_string(repo.join("client/Assets/new.txt")).unwrap(),
+        "from the task\n"
+    );
+    assert!(!wt.exists());
+    assert_eq!(sh(&repo, &["branch", "--list", "task"]), "");
+    assert_eq!(sh(&repo, &["worktree", "list"]).lines().count(), 1);
+}
+
+#[test]
+fn finish_refuses_uncommitted_work_and_changes_nothing() {
+    let (_temp, repo) = unity_repo();
+    add(&repo, &options("../wt", &["-b", "task"]), &Silent).unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+    write(&wt, "client/Assets/a.txt", "not committed\n");
+
+    let err = finish(&repo, &finish_options("../wt")).unwrap_err();
+    assert!(err.to_string().contains("uncommitted"), "{err}");
+    assert_eq!(status(&wt), " M client/Assets/a.txt\n");
+    // `git branch --list` marks a branch checked out elsewhere with "+".
+    assert_eq!(
+        sh(
+            &repo,
+            &["branch", "--list", "--format=%(refname:short)", "task"]
+        )
+        .trim(),
+        "task"
+    );
+}
+
+#[test]
+fn finish_stops_on_conflicts_and_cleans_up_once_they_are_resolved() {
+    let (_temp, repo) = unity_repo();
+    add(&repo, &options("../wt", &["-b", "task"]), &Silent).unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+    write(&wt, "README.md", "task side\n");
+    commit_all(&wt, "task edits the readme");
+    write(&repo, "README.md", "main side\n");
+    commit_all(&repo, "main edits the readme");
+
+    match finish(&repo, &finish_options("../wt")).unwrap() {
+        FinishOutcome::Conflicts { files, .. } => assert_eq!(files, ["README.md"]),
+        other => panic!("expected conflicts: {other:?}"),
+    }
+    assert!(wt.join("README.md").exists());
+
+    write(&repo, "README.md", "both sides\n");
+    sh(&repo, &["add", "README.md"]);
+    sh(&repo, &["commit", "-q", "--no-edit"]);
+    let (merged_now, branch_deleted) = finished(finish(&repo, &finish_options("../wt")).unwrap());
+    assert!(!merged_now && branch_deleted);
+    assert!(!wt.exists());
+}
+
+#[test]
+fn finish_does_not_pair_lookalike_meta_files_as_renames() {
+    let (_temp, repo) = unity_repo();
+    let meta = |guid: &str| {
+        format!(
+            "fileFormatVersion: 2\nguid: {guid}\nNativeFormatImporter:\n  externalObjects: {{}}\n  mainObjectFileID: 2100000\n  userData: \n  assetBundleName: \n  assetBundleVariant: \n"
+        )
+    };
+    write(
+        &repo,
+        "client/Assets/old.mat.meta",
+        &meta("0c7d727a4b9bc754a878a3b92ed37d5a"),
+    );
+    commit_all(&repo, "a material");
+    add(&repo, &options("../wt", &["-b", "task"]), &Silent).unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+    // Each side drops the same file and adds an unrelated one that looks alike.
+    fs::remove_file(wt.join("client/Assets/old.mat.meta")).unwrap();
+    write(
+        &wt,
+        "client/Assets/Shader.meta",
+        &meta("d45fd25396399a04480ddbca4f9e92ef"),
+    );
+    commit_all(&wt, "task adds a shader folder");
+    fs::remove_file(repo.join("client/Assets/old.mat.meta")).unwrap();
+    write(
+        &repo,
+        "client/Assets/Other.png.meta",
+        &meta("e03bddd27456498dbd893df73e0c9f89"),
+    );
+    commit_all(&repo, "main adds a texture");
+
+    // Plain git sees two renames of one file and stops.
+    assert!(git::output(&repo, &["merge-tree", "--write-tree", "HEAD", "task"]).is_err());
+
+    finished(finish(&repo, &finish_options("../wt")).unwrap());
+    assert!(repo.join("client/Assets/Shader.meta").exists());
+    assert!(repo.join("client/Assets/Other.png.meta").exists());
+    assert!(!repo.join("client/Assets/old.mat.meta").exists());
+}
+
+#[test]
+fn concurrent_removals_never_trip_over_each_others_trash() {
+    let (_temp, repo) = unity_repo();
+    let mut trash = Vec::new();
+    for name in ["../a", "../b", "../c"] {
+        add(&repo, &options(name, &["--detach"]), &Silent).unwrap();
+        trash.push(remove(&repo, &removal(name, 0)).unwrap().trash.unwrap());
+    }
+    // Every removal sweeps up all trash it finds, so each one tries them all.
+    let results: Vec<_> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..3)
+            .map(|_| {
+                let trash = &trash;
+                scope.spawn(move || trash.iter().map(|t| purge_trash(t)).collect::<Vec<_>>())
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|w| w.join().unwrap())
+            .collect()
+    });
+    for result in results {
+        let report = result.unwrap();
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+    }
+    let parent = repo.parent().unwrap();
+    let left: Vec<_> = fs::read_dir(parent)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(".multibox-trash-"))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
 }

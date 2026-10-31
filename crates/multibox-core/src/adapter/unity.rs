@@ -125,6 +125,14 @@ impl Adapter for Unity {
         };
         vec![("UNITY_PROJECT_PATH".to_owned(), path)]
     }
+
+    /// `.meta` files are small and alike, so git's default 50% similarity
+    /// pairs unrelated ones as renames. Replaying a real project's history,
+    /// that produced a fifth of all conflicts and once replaced a GUID both
+    /// branches agreed on; 90% removed them without changing any clean merge.
+    fn merge_options(&self, _project: &Project) -> Vec<String> {
+        vec!["-X".to_owned(), "find-renames=90%".to_owned()]
+    }
 }
 
 /// An editor that crashed or failed to start leaves its lockfile behind, so only a

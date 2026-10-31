@@ -28,7 +28,7 @@ fn same_path(a: &Path, b: &Path) -> bool {
     }
 }
 
-fn refuse_if_editor_open(repo: &Repo) -> Result<()> {
+pub(crate) fn refuse_if_editor_open(repo: &Repo) -> Result<()> {
     let Ok(index) = Index::read(&repo.index_path(), repo.hash_len) else {
         return Ok(());
     };
@@ -143,16 +143,46 @@ pub fn remove(cwd: &Path, options: &RemoveOptions) -> Result<RemoveOutcome> {
 /// Deletes a directory created by [`remove`]. Any other path is refused, so a
 /// bad argument can never turn into deleting something else.
 pub fn purge_trash(path: &Path) -> Result<multibox_clone::PurgeReport> {
-    let is_trash = path
+    let Some(name) = path
         .file_name()
-        .is_some_and(|name| name.to_string_lossy().starts_with(TRASH_PREFIX));
-    if !is_trash {
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(TRASH_PREFIX))
+    else {
         return Err(Error::new(format!(
             "refusing to purge {}: not a multibox trash directory",
             path.display()
         )));
+    };
+    let Some(claimed) = claim(path, &name)? else {
+        return Ok(multibox_clone::PurgeReport::default());
+    };
+    Ok(multibox_clone::purge(&claimed, None)?)
+}
+
+const CLAIM_MARK: &str = "~purging-";
+
+/// Renames trash to mark this process as the one deleting it. Several removals
+/// running at once each sweep up leftover trash, and two of them deleting the
+/// same tree trip over each other. A rename succeeds for exactly one.
+///
+/// Returns `None` when there is nothing to do: the trash is gone, or another
+/// live process has claimed it. A claim whose process has exited is taken over.
+fn claim(path: &Path, name: &str) -> Result<Option<PathBuf>> {
+    let own = std::process::id();
+    let base = match name.split_once(CLAIM_MARK) {
+        Some((base, owner)) => match owner.parse::<u32>() {
+            Ok(pid) if pid == own => return Ok(Some(path.to_path_buf())),
+            Ok(pid) if adapter::process_alive(pid) => return Ok(None),
+            _ => base,
+        },
+        None => name,
+    };
+    let claimed = path.with_file_name(format!("{base}{CLAIM_MARK}{own}"));
+    match fs::rename(path, &claimed) {
+        Ok(()) => Ok(Some(claimed)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err.into()),
     }
-    Ok(multibox_clone::purge(path, None)?)
 }
 
 /// A pipe held by the caller stays open for as long as any process has a copy of
