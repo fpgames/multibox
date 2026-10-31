@@ -69,7 +69,14 @@ is detached; the actual deletion of 715,000 files took about 41 seconds.
 
 ## Moving a project onto the Dev Drive
 
-A full copy of 942,388 files (315.8 GiB) took 548.9 seconds with the editor open.
+`git multibox init` created a 500 GiB Dev Drive and copied 942,388 files (315.8 GiB)
+in 690 seconds with the editor open. The first `git status` in the copy took 0.16
+seconds. The VHDX ended at 450 GiB for 326 GiB of data, about 1.4 times the data.
+
+That overhead is why the drive is sized to the project. ReFS spreads its writes and
+a dynamic VHDX never gives a block back: on an earlier 1 TiB drive, repeated test
+runs left a 923 GiB file holding 332 GiB of data, and neither retrim nor `compact
+vdisk` recovered any of it.
 
 ## Several worktrees next to the main editor
 
