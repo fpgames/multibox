@@ -3,11 +3,13 @@ use crate::git::{self, Repo};
 use crate::index::Index;
 use crate::plan::{Plan, PlanSummary, build_plan};
 use crate::{Error, Result};
-use multibox_clone::{Capability, Options, Progress, Report, Strategy, execute, free_space, probe};
+use multibox_clone::{
+    Capability, DirEntry, Manifest, Options, Progress, Report, Strategy, execute, free_space, probe,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 /// How files reach the new worktree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -56,6 +58,9 @@ pub struct AddOutcome {
     pub environment: Vec<(String, String)>,
 }
 
+const DATABASE_ATTEMPTS: usize = 3;
+const DATABASE_RETRY_DELAY: Duration = Duration::from_secs(2);
+
 /// Space kept free on top of the plan, so a copy never fills the volume.
 const FREE_SPACE_MARGIN: u64 = 1 << 30;
 
@@ -82,6 +87,71 @@ fn snapshot(paths: &[PathBuf]) -> Snapshot {
             (path.clone(), state)
         })
         .collect()
+}
+
+/// Takes the engine's databases out of the manifest and clones them first.
+///
+/// The order matters. Imported artifacts are immutable and only ever added, so
+/// a database older than the artifact store it is copied with still resolves
+/// every reference; a newer one could point at files that were not copied. A
+/// write during the copy is detected and retried, which keeps the window to the
+/// moment the database is read rather than the whole clone.
+///
+/// Returns false if the database kept changing through every attempt.
+fn capture_databases(
+    plan: &mut Plan,
+    new: &Repo,
+    databases: &[String],
+    options: &Options<'_>,
+) -> Result<bool> {
+    let (first, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut plan.manifest.files)
+        .into_iter()
+        .partition(|file| databases.contains(&file.rel));
+    plan.manifest.files = rest;
+    if first.is_empty() {
+        return Ok(true);
+    }
+    let mut dirs: Vec<String> = Vec::new();
+    for file in &first {
+        let mut path = file.rel.as_str();
+        while let Some((parent, _)) = path.rsplit_once('/') {
+            dirs.push(parent.to_owned());
+            path = parent;
+        }
+    }
+    dirs.sort();
+    dirs.dedup();
+    let bytes = first.iter().map(|file| file.size).sum();
+    plan.manifest.bytes -= bytes;
+    let sources: Vec<PathBuf> = first
+        .iter()
+        .map(|file| plan.repo.worktree.join(&file.rel))
+        .collect();
+    let manifest = Manifest {
+        dirs: dirs
+            .into_iter()
+            .map(|rel| DirEntry { rel, times: None })
+            .collect(),
+        files: first,
+        links: Vec::new(),
+        bytes,
+        skipped: Vec::new(),
+    };
+
+    for attempt in 0..DATABASE_ATTEMPTS {
+        let before = snapshot(&sources);
+        execute(&manifest, &plan.repo.worktree, &new.worktree, options)?;
+        if before == snapshot(&sources) {
+            return Ok(true);
+        }
+        if attempt + 1 < DATABASE_ATTEMPTS {
+            for file in &manifest.files {
+                fs::remove_file(new.worktree.join(&file.rel))?;
+            }
+            std::thread::sleep(DATABASE_RETRY_DELAY);
+        }
+    }
+    Ok(false)
 }
 
 fn check_free_space(plan: &Plan, target: &Path, capability: &Capability) -> Result<()> {
@@ -232,10 +302,10 @@ pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<
             plan.manifest.skipped[0]
         ));
     }
-    let volatile: Vec<PathBuf> = plan
+    let databases: Vec<String> = plan
         .projects
         .iter()
-        .flat_map(|project| adapter::volatile_files(&plan.repo.worktree, project))
+        .flat_map(adapter::volatile_files)
         .collect();
     for project in &plan.projects {
         if let Some(editor) = adapter::running_editor(&plan.repo.worktree, project) {
@@ -243,7 +313,7 @@ pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<
                 .process_id
                 .map_or_else(String::new, |pid| format!(" (pid {pid})"));
             observer.warn(&format!(
-                "{} editor{who} has {} open; if it writes during the clone the carried cache may need a repair import",
+                "{} editor{who} has {} open",
                 project.engine,
                 plan.repo.worktree.join(&project.root).display()
             ));
@@ -276,7 +346,17 @@ pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<
     let hook_needed = plan.index.is_some();
     let result = (|| -> Result<(Repo, Report)> {
         let new = Repo::discover(&target)?;
-        let before = snapshot(&volatile);
+        let quiet = Options {
+            strategy,
+            threads: options.threads,
+            progress: None,
+        };
+        if !capture_databases(&mut plan, &new, &databases, &quiet)? {
+            warnings.push(
+                "the engine was writing to its asset database throughout the clone; the first launch may need to repair it"
+                    .to_owned(),
+            );
+        }
         let progress = Arc::new(Progress::default());
         observer.clone_started(
             plan.manifest.files.len() as u64,
@@ -295,12 +375,6 @@ pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<
         );
         observer.clone_finished();
         let report = report?;
-        if before != snapshot(&volatile) {
-            warnings.push(
-                "the engine's asset database changed during the clone; the first launch may repair it"
-                    .to_owned(),
-            );
-        }
         describe_failures(&report, &mut warnings);
         if plan.index.is_some() {
             let started = Instant::now();

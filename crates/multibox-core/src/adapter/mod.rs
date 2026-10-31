@@ -11,7 +11,7 @@ pub use unity::Unity;
 
 use crate::Result;
 use crate::git::{self, Repo};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// A project found inside the repository.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,7 +45,8 @@ pub trait Adapter: Sync {
     fn includes(&self, project: &Project) -> Vec<String>;
     /// Patterns that override [`Adapter::includes`].
     fn excludes(&self, project: &Project) -> Vec<String>;
-    /// Files that change while an editor runs, used to detect a torn snapshot.
+    /// Databases an editor writes to while running. They are cloned before
+    /// everything else and retried if they change, so keep this list short.
     fn volatile_files(&self, project: &Project) -> Vec<String>;
     fn running_editor(&self, worktree: &Path, project: &Project) -> Option<Editor>;
     /// Variables that keep engine tooling inside this worktree.
@@ -81,14 +82,8 @@ pub fn excludes(project: &Project) -> Vec<String> {
     adapter_for(project).map_or_else(Vec::new, |adapter| adapter.excludes(project))
 }
 
-pub fn volatile_files(worktree: &Path, project: &Project) -> Vec<PathBuf> {
-    adapter_for(project).map_or_else(Vec::new, |adapter| {
-        adapter
-            .volatile_files(project)
-            .iter()
-            .map(|rel| worktree.join(rel))
-            .collect()
-    })
+pub fn volatile_files(project: &Project) -> Vec<String> {
+    adapter_for(project).map_or_else(Vec::new, |adapter| adapter.volatile_files(project))
 }
 
 pub fn running_editor(worktree: &Path, project: &Project) -> Option<Editor> {

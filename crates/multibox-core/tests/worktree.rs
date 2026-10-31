@@ -127,6 +127,40 @@ fn reports_the_environment_that_pins_tools_to_the_worktree() {
 }
 
 #[test]
+fn databases_arrive_intact_and_keep_their_timestamps() {
+    let (_temp, repo) = unity_repo();
+    write(&repo, "client/Library/SourceAssetDB", "source asset db\n");
+    let old = SystemTime::now() - Duration::from_secs(3_600);
+    let database = repo.join("client/Library/ArtifactDB");
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&database)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+
+    let outcome = add(&repo, &options("../wt", &["--detach"]), &Silent).unwrap();
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+
+    let wt = repo.parent().unwrap().join("wt");
+    assert_eq!(
+        fs::read(wt.join("client/Library/ArtifactDB")).unwrap(),
+        fs::read(&database).unwrap()
+    );
+    assert_eq!(
+        fs::read_to_string(wt.join("client/Library/SourceAssetDB")).unwrap(),
+        "source asset db\n"
+    );
+    assert_eq!(
+        fs::metadata(wt.join("client/Library/ArtifactDB"))
+            .unwrap()
+            .modified()
+            .unwrap(),
+        fs::metadata(&database).unwrap().modified().unwrap()
+    );
+}
+
+#[test]
 fn registers_like_a_native_worktree() {
     let (_temp, repo) = unity_repo();
     add(&repo, &options("../wt", &["--detach"]), &Silent).unwrap();
