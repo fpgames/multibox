@@ -52,6 +52,8 @@ pub struct AddOutcome {
     pub reused_index: bool,
     pub report: Option<Report>,
     pub warnings: Vec<String>,
+    /// Variables that keep engine tooling inside the new worktree.
+    pub environment: Vec<(String, String)>,
 }
 
 /// Space kept free on top of the plan, so a copy never fills the volume.
@@ -250,6 +252,7 @@ pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<
 
     if options.dry_run {
         return Ok(AddOutcome {
+            environment: adapter::environment(&target, &plan.projects),
             path: target,
             summary: plan.summary,
             capability,
@@ -316,6 +319,7 @@ pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<
                 run_post_checkout(&new, observer);
             }
             Ok(AddOutcome {
+                environment: adapter::environment(&new.worktree, &plan.projects),
                 path: new.worktree,
                 summary: plan.summary,
                 capability: report.capability.clone().unwrap_or(capability),

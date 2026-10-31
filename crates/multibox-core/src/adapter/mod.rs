@@ -9,6 +9,8 @@ mod unity;
 
 pub use unity::Unity;
 
+use crate::Result;
+use crate::git::{self, Repo};
 use std::path::{Path, PathBuf};
 
 /// A project found inside the repository.
@@ -46,6 +48,10 @@ pub trait Adapter: Sync {
     /// Files that change while an editor runs, used to detect a torn snapshot.
     fn volatile_files(&self, project: &Project) -> Vec<String>;
     fn running_editor(&self, worktree: &Path, project: &Project) -> Option<Editor>;
+    /// Variables that keep engine tooling inside this worktree.
+    fn environment(&self, _worktree: &Path, _project: &Project) -> Vec<(String, String)> {
+        Vec::new()
+    }
 }
 
 pub fn adapters() -> &'static [&'static dyn Adapter] {
@@ -87,6 +93,33 @@ pub fn volatile_files(worktree: &Path, project: &Project) -> Vec<PathBuf> {
 
 pub fn running_editor(worktree: &Path, project: &Project) -> Option<Editor> {
     adapter_for(project).and_then(|adapter| adapter.running_editor(worktree, project))
+}
+
+/// Environment for tools running in `worktree`. A variable claimed by two
+/// projects is dropped: silently picking one could send commands to the wrong
+/// editor, which is exactly what these variables exist to prevent.
+pub fn environment(worktree: &Path, projects: &[Project]) -> Vec<(String, String)> {
+    let found: Vec<(String, String)> = projects
+        .iter()
+        .filter_map(|project| Some((adapter_for(project)?, project)))
+        .flat_map(|(adapter, project)| adapter.environment(worktree, project))
+        .collect();
+    found
+        .iter()
+        .filter(|(key, _)| found.iter().filter(|(other, _)| other == key).count() == 1)
+        .cloned()
+        .collect()
+}
+
+/// The environment of the worktree containing `dir`.
+pub fn worktree_environment(dir: &Path) -> Result<Vec<(String, String)>> {
+    let repo = Repo::discover(dir)?;
+    let listed = git::output(&repo.worktree, &["ls-files", "-z"])?;
+    let tracked: Vec<&str> = listed.split('\0').filter(|path| !path.is_empty()).collect();
+    Ok(environment(
+        &repo.worktree,
+        &detect(&repo.worktree, &tracked),
+    ))
 }
 
 #[cfg(windows)]

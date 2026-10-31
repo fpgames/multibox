@@ -5,7 +5,7 @@
 
 use multibox_core::{
     AddOptions, Level, MigrateOptions, Mode, Mount, Observer, Progress, RemoveOptions,
-    SetupOptions, add, diagnose, git, migrate, plan_setup, purge_trash, remove, run_setup,
+    SetupOptions, adapter, add, diagnose, git, migrate, plan_setup, purge_trash, remove, run_setup,
     sweep_trash, switch,
 };
 use std::path::{Path, PathBuf};
@@ -20,6 +20,7 @@ usage: git multibox add [<options>] <path> [<commit-ish>]
        git multibox remove [-f] <worktree>
        git multibox <list|lock|move|prune|repair|unlock> ...
        git multibox doctor [--json]
+       git multibox env [--json]
        git multibox setup [--vhdx <file>] [--size <GiB>] [--letter <X> | --folder <dir>] [--dry-run]
        git multibox migrate <destination> [--exclude <path>]... [--dry-run]
        git multibox migrate --switch <destination>
@@ -91,6 +92,14 @@ impl Observer for Terminal {
             let _ = worker.join();
         }
     }
+}
+
+fn environment_object(variables: &[(String, String)]) -> serde_json::Value {
+    variables
+        .iter()
+        .map(|(key, value)| (key.clone(), serde_json::Value::from(value.as_str())))
+        .collect::<serde_json::Map<_, _>>()
+        .into()
 }
 
 fn take_value(args: &mut std::vec::IntoIter<String>, flag: &str) -> Result<String, String> {
@@ -191,6 +200,7 @@ fn run_add(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
             "failures": report.map_or(0, |report| report.failures.len()),
             "seconds": started.elapsed().as_secs_f64(),
             "warnings": outcome.warnings,
+            "environment": environment_object(&outcome.environment),
         });
         println!("{value}");
         return Ok(ExitCode::SUCCESS);
@@ -214,6 +224,11 @@ fn run_add(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
         outcome.capability.filesystem,
         started.elapsed().as_secs_f32()
     );
+    for (key, value) in &outcome.environment {
+        terminal.note(&format!(
+            "run tools in this worktree with {key}={value}, or use `git multibox env`"
+        ));
+    }
     if !outcome.capability.reflink && options.mode == Mode::Auto {
         terminal.note(&format!(
             "copy mode used {:.1} GiB. `git multibox setup` enables reflinks: new worktrees then take seconds and almost no space.",
@@ -365,6 +380,18 @@ fn run_doctor(cwd: &Path, args: &[String]) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
+fn run_env(cwd: &Path, args: &[String]) -> Result<ExitCode, String> {
+    let variables = adapter::worktree_environment(cwd).map_err(|err| err.to_string())?;
+    if args.iter().any(|arg| arg == "--json") {
+        println!("{}", environment_object(&variables));
+    } else {
+        for (key, value) in &variables {
+            println!("export {key}='{}'", value.replace('\'', "'\\''"));
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 fn run_setup_command(args: Vec<String>) -> Result<ExitCode, String> {
     let mut options = SetupOptions::default();
     let mut dry_run = false;
@@ -484,6 +511,7 @@ fn run() -> Result<ExitCode, String> {
         "add" => run_add(&cwd, args),
         "remove" => run_remove(&cwd, args),
         "doctor" => run_doctor(&cwd, &args),
+        "env" => run_env(&cwd, &args),
         "setup" => run_setup_command(args),
         "migrate" => run_migrate(&cwd, args),
         "__purge" => {

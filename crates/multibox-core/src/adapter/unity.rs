@@ -101,6 +101,19 @@ impl Adapter for Unity {
             .exists()
             .then_some(Editor { process_id: None })
     }
+
+    /// A bare `unity command` run in a project with no editor of its own falls
+    /// back to whichever editor is open, so a worktree without a running editor
+    /// would drive the main one. This variable makes the CLI fail instead.
+    fn environment(&self, worktree: &Path, project: &Project) -> Vec<(String, String)> {
+        let path = worktree.join(&project.root).display().to_string();
+        let path = if cfg!(windows) {
+            path.replace('/', "\\")
+        } else {
+            path
+        };
+        vec![("UNITY_PROJECT_PATH".to_owned(), path)]
+    }
 }
 
 fn parse_version(text: &str) -> Option<String> {

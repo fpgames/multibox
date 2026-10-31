@@ -110,6 +110,23 @@ fn new_worktree_is_a_clean_checkout_with_caches() {
 }
 
 #[test]
+fn reports_the_environment_that_pins_tools_to_the_worktree() {
+    let (_temp, repo) = unity_repo();
+    let outcome = add(&repo, &options("../wt", &["--detach"]), &Silent).unwrap();
+    let (key, value) = &outcome.environment[0];
+    assert_eq!(key, "UNITY_PROJECT_PATH");
+    let reported = fs::canonicalize(value).unwrap();
+    let expected = fs::canonicalize(repo.parent().unwrap().join("wt/client")).unwrap();
+    assert_eq!(reported, expected);
+
+    let wt = repo.parent().unwrap().join("wt");
+    assert_eq!(
+        multibox_core::adapter::worktree_environment(&wt).unwrap(),
+        outcome.environment
+    );
+}
+
+#[test]
 fn registers_like_a_native_worktree() {
     let (_temp, repo) = unity_repo();
     add(&repo, &options("../wt", &["--detach"]), &Silent).unwrap();
