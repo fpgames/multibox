@@ -46,6 +46,8 @@ impl TreeFilter for CopyFilter {
     fn check(&self, rel: &str, _is_dir: bool) -> Decision {
         let instance_state = rel.ends_with("/Library/EditorInstance.json")
             || rel == "Library/EditorInstance.json"
+            || rel.ends_with("/Library/Pipeline")
+            || rel == "Library/Pipeline"
             || (rel.contains("Library/") && (rel.ends_with("-lock") || rel.ends_with(".pid")));
         if instance_state || self.skipped.iter().any(|path| path == rel) {
             Decision::Exclude

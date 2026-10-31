@@ -54,6 +54,11 @@ impl Adapter for Unity {
             // ilpp.pid as a leftover, which would take down the source editor's
             // IL post-processing runner.
             "Library/*.pid",
+            // The discovery file of the source editor's control server: its PID,
+            // port and an access token. Carried over, tools running in the new
+            // worktree would drive the source editor instead.
+            "Library/Pipeline/",
+            "Library/Search/*-lock",
             // LMDB lock files hold reader slots of live processes; Unity recreates them.
             "Library/*-lock",
             "Library/*.lock",

@@ -101,6 +101,8 @@ fn new_worktree_is_a_clean_checkout_with_caches() {
     // Left behind: per-instance state and anything nobody asked for.
     assert!(!wt.join("client/Library/EditorInstance.json").exists());
     assert!(!wt.join("client/Library/ilpp.pid").exists());
+    assert!(!wt.join("client/Library/Pipeline").exists());
+    assert!(!wt.join("client/Library/Search/fts.index-lock").exists());
     assert!(!wt.join("client/Library/ArtifactDB-lock").exists());
     assert!(!wt.join("client/Temp").exists());
     assert!(!wt.join("client/Logs").exists());
@@ -474,6 +476,7 @@ fn migrate_copies_without_touching_the_source_or_its_worktrees() {
     assert!(destination.join("client/Library/ArtifactDB").exists());
     assert!(!destination.join("client/Library/ArtifactDB-lock").exists());
     assert!(!destination.join("client/Library/ilpp.pid").exists());
+    assert!(!destination.join("client/Library/Pipeline").exists());
     assert!(!destination.join("client/Temp").exists());
 }
 
