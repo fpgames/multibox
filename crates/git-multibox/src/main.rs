@@ -19,7 +19,7 @@ const USAGE: &str = "\
 usage: git multibox add [<options>] <path> [<commit-ish>]
        git multibox remove [-f] <worktree>
        git multibox <list|lock|move|prune|repair|unlock> ...
-       git multibox init [--to <path>] [--exclude <path>]... [--dry-run]
+       git multibox init [--project <path>] [--to <path>] [--exclude <path>]... [--dry-run]
        git multibox doctor [--json]
        git multibox env [--json]
        git multibox setup [--vhdx <file>] [--size <GiB>] [--letter <X> | --folder <dir>] [--dry-run]
@@ -431,16 +431,25 @@ fn run_setup_command(args: Vec<String>) -> Result<ExitCode, String> {
 
 fn run_init(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
     let mut options = InitOptions::default();
+    let mut project = cwd.to_path_buf();
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--project" => {
+                project = real_directory(cwd.join(take_value(&mut args, "--project")?));
+            }
             "--to" => options.destination = Some(cwd.join(take_value(&mut args, "--to")?)),
             "--exclude" => options.exclude.push(take_value(&mut args, "--exclude")?),
             "--dry-run" => options.dry_run = true,
             other => return Err(format!("unknown option {other}")),
         }
     }
-    let outcome = init(cwd, &options, &Terminal::default()).map_err(|err| err.to_string())?;
+    // The final step renames the project folder, which Windows refuses while any
+    // process has it as its working directory. That includes this one.
+    if let Some(parent) = project.parent() {
+        let _ = std::env::set_current_dir(parent);
+    }
+    let outcome = init(&project, &options, &Terminal::default()).map_err(|err| err.to_string())?;
     match outcome {
         InitOutcome::Ready { filesystem } => {
             println!("Ready: {filesystem} has reflinks, so new worktrees share data.");
@@ -468,8 +477,9 @@ fn run_init(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
             reason,
         } => {
             println!(
-                "Copied to {}, but {reason}.\nSave your work, close it, and run `git multibox init` again to finish. Changes made until then are brought across.",
-                destination.display()
+                "Copied to {}, but {reason}.\nSave your work and close it, then finish from outside the project folder, so nothing holds it open:\n  git multibox init --project \"{}\"\nChanges made until then are brought across.",
+                destination.display(),
+                project.display()
             );
         }
         InitOutcome::Switched {

@@ -283,7 +283,7 @@ pub fn switch(cwd: &Path, destination: &Path, exclude: &[String]) -> Result<Swit
 
     fs::rename(&repo.worktree, &kept_at).map_err(|err| {
         Error::new(format!(
-            "cannot rename {}: {err}. Close anything using it, such as an IDE or a terminal in that folder, and run this again; nothing was switched",
+            "cannot rename {}: {err}. Close anything using it, such as an IDE or a terminal in that folder, and run this again from outside it; nothing was switched",
             repo.worktree.display()
         ))
     })?;

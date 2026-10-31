@@ -48,9 +48,9 @@ It creates a Dev Drive inside a new VHDX file, without touching any existing
 volume, and moves the project onto it, since reflinks only work within a volume.
 Plan for the file's full size: it is sized at 1.5 times the project, and although
 it starts small, it fills towards that size with use and never shrinks.
-The copy happens while you keep working. Close the editor when it is done, run
-`init` again, and it brings across what changed and redirects the old path to
-the new location. The original stays on disk until you delete it. Run `init` as
+The copy happens while you keep working. When it is done, close the editor and
+run `git multibox init --project <path>` from outside the project folder. It
+brings across what changed and redirects the old path to the new location. The original stays on disk until you delete it. Run `init` as
 many times as you like: it does whatever is left. On macOS it has nothing to do.
 
 ## Commands
@@ -58,7 +58,7 @@ many times as you like: it does whatever is left. On macOS it has nothing to do.
 ```
 git multibox add [<options>] <path> [<commit-ish>]
 git multibox remove [-f] <worktree>
-git multibox init [--to <path>] [--exclude <path>]...
+git multibox init [--project <path>] [--to <path>] [--exclude <path>]...
 git multibox doctor
 git multibox env
 ```
