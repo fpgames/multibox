@@ -1203,3 +1203,38 @@ fn finish_does_not_pair_lookalike_meta_files_as_renames() {
     assert!(repo.join("client/Assets/Other.png.meta").exists());
     assert!(!repo.join("client/Assets/old.mat.meta").exists());
 }
+
+#[test]
+fn concurrent_removals_never_trip_over_each_others_trash() {
+    let (_temp, repo) = unity_repo();
+    let mut trash = Vec::new();
+    for name in ["../a", "../b", "../c"] {
+        add(&repo, &options(name, &["--detach"]), &Silent).unwrap();
+        trash.push(remove(&repo, &removal(name, 0)).unwrap().trash.unwrap());
+    }
+    // Every removal sweeps up all trash it finds, so each one tries them all.
+    let results: Vec<_> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..3)
+            .map(|_| {
+                let trash = &trash;
+                scope.spawn(move || trash.iter().map(|t| purge_trash(t)).collect::<Vec<_>>())
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|w| w.join().unwrap())
+            .collect()
+    });
+    for result in results {
+        let report = result.unwrap();
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+    }
+    let parent = repo.parent().unwrap();
+    let left: Vec<_> = fs::read_dir(parent)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(".multibox-trash-"))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}
