@@ -10,10 +10,10 @@ as indicative rather than precise. The Dev Drive sits in a dynamic VHDX on NVMe.
 
 | | Native `git worktree` | Multibox on NTFS | Multibox on Dev Drive |
 | --- | --- | --- | --- |
-| Create | 204.8 s | 62.0 s | 44 to 46 s |
-| First Unity launch | 1127.3 s | 51.7 s | 51.9 s |
-| **Total** | **22 minutes** | **2 minutes** | **1.6 minutes** |
-| Assets imported | 56,960 | 1,076 | 1,076 |
+| Create | 204.8 s | 62.0 s | 45 s |
+| First Unity launch | 1127.3 s | 25 to 52 s | 25 to 52 s |
+| **Total** | **22 minutes** | **2 minutes** | **73 seconds** |
+| Assets imported | 56,960 | 0 to 1,076 | 0 to 1,076 |
 | Disk per worktree | 52 GiB | 56 GiB | 2.1 to 2.7 GiB |
 | Ignored generated assets | missing | present | present |
 | Reopening later | not measured | not measured | 14.1 s |
@@ -21,15 +21,14 @@ as indicative rather than precise. The Dev Drive sits in a dynamic VHDX on NVMe.
 The native worktree also needs a generation step for what it is missing. On the
 Dev Drive, the worktree grew by 0.07 GiB after Unity imported and compiled in it.
 
-Multibox's 1,076 imports came from the source project, not from cloning: the
-long-running editor's `Library/` had not caught up with the latest commits. Cloning
-from a project whose `Library/` is up to date removes them:
+Multibox's imports depend on the source project, not on cloning. An editor that has
+been left open has not seen the latest commits, and its clones catch up on them:
 
 | First launch of a clone | Time | Imports |
 | --- | --- | --- |
 | Source `Library/` behind the working tree | 52 s | 1,076 |
-| Source `Library/` up to date | 29.8 s | 0 |
-| Reopening the same worktree (baseline) | 13.7 s | 0 |
+| Source `Library/` up to date | 25 s | 0 |
+| Reopening the same worktree (baseline) | 14 s | 0 |
 
 The difference between the last two rows is one rebuild of the script build graph,
 which embeds absolute paths.
@@ -73,7 +72,10 @@ is detached; the actual deletion of 715,000 files took about 41 seconds.
 in 690 seconds with the editor open. The first `git status` in the copy took 0.16
 seconds. The VHDX ended at 450 GiB for 326 GiB of data, about 1.4 times the data.
 
-That overhead is why the drive is sized to the project. ReFS spreads its writes and
+Finishing took 11.9 seconds with the editor closed, bringing across 212 files that
+had changed since the copy. The editor reopened on the old path, ready in 43 seconds.
+
+The overhead above is why the drive is sized to the project. ReFS spreads its writes and
 a dynamic VHDX never gives a block back: on an earlier 1 TiB drive, repeated test
 runs left a 923 GiB file holding 332 GiB of data, and neither retrim nor `compact
 vdisk` recovered any of it.
