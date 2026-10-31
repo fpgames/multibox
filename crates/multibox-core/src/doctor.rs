@@ -100,7 +100,7 @@ fn check_repository(report: &mut Diagnosis, cwd: &Path) {
                 "{}, {}",
                 capability.filesystem,
                 if capability.reflink {
-                    "reflinks available: new worktrees are near-instant and share data"
+                    "reflinks available: new worktrees share data and take almost no space"
                 } else {
                     "no reflinks: new worktrees are full copies"
                 }
