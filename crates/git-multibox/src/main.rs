@@ -416,7 +416,7 @@ fn run_setup_command(args: Vec<String>) -> Result<ExitCode, String> {
         Mount::Folder(path) => path.display().to_string(),
     };
     println!(
-        "Multibox will create a Dev Drive of up to {} GiB:\n  file   {} (grows on demand; no existing volume is touched)\n  mount  {mount}",
+        "Multibox will create a Dev Drive of {} GiB:\n  file   {} (fills up to that size as it is used and does not shrink; no existing volume is touched)\n  mount  {mount}",
         plan.size_gib,
         plan.vhdx.display()
     );

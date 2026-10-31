@@ -46,6 +46,8 @@ checkout and still carries the caches.
 Copy mode needs no setup. To get reflinks on Windows, run `git multibox init`.
 It creates a Dev Drive inside a new VHDX file, without touching any existing
 volume, and moves the project onto it, since reflinks only work within a volume.
+Plan for the file's full size: it is sized at 1.5 times the project, and although
+it starts small, it fills towards that size with use and never shrinks.
 The copy happens while you keep working. Close the editor when it is done, run
 `init` again, and it brings across what changed and redirects the old path to
 the new location. The original stays on disk until you delete it. Run `init` as

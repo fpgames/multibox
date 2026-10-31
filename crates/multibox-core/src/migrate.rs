@@ -126,6 +126,24 @@ fn refresh_copied_index(repo: &Repo, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+fn selection(
+    repo: &Repo,
+    exclude: &[String],
+    threads: Option<usize>,
+) -> Result<multibox_clone::Manifest> {
+    let filter = CopyFilter::new(repo, exclude);
+    Ok(scan(
+        &repo.worktree,
+        &ScanRequest {
+            files: Vec::new(),
+            links: Vec::new(),
+            trees: vec![String::new()],
+            filter: &filter,
+            threads,
+        },
+    )?)
+}
+
 /// Copies the main worktree, history included, to `destination`. The source is
 /// only read, so an open editor is fine: [`switch`] picks up later changes.
 pub fn migrate(
@@ -141,17 +159,7 @@ pub fn migrate(
         )));
     }
 
-    let filter = CopyFilter::new(&repo, &options.exclude);
-    let manifest = scan(
-        &repo.worktree,
-        &ScanRequest {
-            files: Vec::new(),
-            links: Vec::new(),
-            trees: vec![String::new()],
-            filter: &filter,
-            threads: options.threads,
-        },
-    )?;
+    let manifest = selection(&repo, &options.exclude, options.threads)?;
     let files = manifest.files.len() as u64;
     let bytes = manifest.bytes;
 
@@ -403,14 +411,33 @@ fn existing_area() -> Option<PathBuf> {
         .map(|volume| PathBuf::from(volume.root))
 }
 
+/// ReFS spreads its writes across the whole volume and a dynamic VHDX never gives
+/// a touched block back, so the maximum size is the real cost on the host disk.
+/// It should fit the project rather than be generous: half as much again leaves
+/// room for worktrees, which share data, and for the project to grow.
+fn area_size_gib(project_bytes: u64) -> u64 {
+    const MINIMUM_GIB: u64 = 100;
+    let project_gib = project_bytes.div_ceil(1 << 30);
+    (project_gib * 3 / 2).max(MINIMUM_GIB).next_multiple_of(50)
+}
+
 /// The root of a reflink-capable area, created if the machine has none.
-fn ensure_area(options: &InitOptions, observer: &dyn Observer) -> Result<PathBuf> {
+fn ensure_area(
+    options: &InitOptions,
+    project_bytes: u64,
+    observer: &dyn Observer,
+) -> Result<PathBuf> {
     if let Some(root) = existing_area() {
         return Ok(root);
     }
-    let plan = plan_setup(&options.setup)?;
+    let mut setup = options.setup.clone();
+    setup
+        .size_gib
+        .get_or_insert_with(|| area_size_gib(project_bytes));
+    let plan = plan_setup(&setup)?;
     observer.note(&format!(
-        "creating a Dev Drive in {}, which grows on demand; no existing volume is touched",
+        "creating a Dev Drive of {} GiB in {}; no existing volume is touched",
+        plan.size_gib,
         plan.vhdx.display()
     ));
     run_setup(&plan)?;
@@ -480,7 +507,10 @@ pub fn init(cwd: &Path, options: &InitOptions, observer: &dyn Observer) -> Resul
 
     let destination = match &options.destination {
         Some(path) => path.clone(),
-        None => ensure_area(options, observer)?.join(&name),
+        None => {
+            let bytes = selection(&repo, &options.exclude, None)?.bytes;
+            ensure_area(options, bytes, observer)?.join(&name)
+        }
     };
     if !destination.exists() {
         copy(&destination, false)?;
@@ -497,4 +527,22 @@ pub fn init(cwd: &Path, options: &InitOptions, observer: &dyn Observer) -> Resul
         kept_at: switched.kept_at,
         updated: switched.updated,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GIB: u64 = 1 << 30;
+
+    #[test]
+    fn the_area_fits_the_project() {
+        assert_eq!(area_size_gib(316 * GIB), 500);
+        assert_eq!(area_size_gib(100 * GIB), 150);
+    }
+
+    #[test]
+    fn the_area_has_a_floor() {
+        assert_eq!(area_size_gib(GIB), 100);
+    }
 }
