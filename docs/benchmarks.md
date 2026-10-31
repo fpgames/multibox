@@ -136,7 +136,8 @@ and the path still named the original.
 ## pnpm
 
 The Cindy monorepo: 38 workspace projects and 2,328 packages, pnpm 10.33.2 with
-`node-linker=hoisted`, on the same workstation. Each row runs from creating the
+`node-linker=hoisted`, on the same workstation and on a Mac Studio (M5 Max,
+64 GiB, APFS, Node 24). Each row runs from creating the
 worktree until `pnpm install --frozen-lockfile` has finished, over two or three
 runs with the store already filled.
 
@@ -147,13 +148,19 @@ runs with the store already filled.
 | Native `git worktree`, Dev Drive | 3.1 to 3.2 s | 22.6 s | 25.8 s | 0.12 to 0.43 s |
 | Multibox on Dev Drive | 3.1 s | 22.5 to 22.9 s | 25.7 s | 0.05 to 0.06 s |
 | Multibox on Dev Drive, `node_modules/` carried | 19.4 to 19.6 s | 5.8 s | 25.3 s | 0.05 s |
+| Native `git worktree`, Mac Studio | 2.0 s | 9.8 to 10.3 s | 11.8 to 12.4 s | 0.34 to 0.44 s |
+| Multibox on the Mac Studio | 1.4 to 1.7 s | 10.1 to 10.4 s | 11.8 s | 0.07 to 0.08 s |
+| Multibox on the Mac Studio, `node_modules/` carried | 7.3 to 7.6 s | 3.1 s | 10.4 to 10.7 s | 0.08 s |
 
 Copying the 135,672 files of `node_modules/` on NTFS took 36 seconds and 7.0 GiB,
 against 1.8 GiB for a native worktree after its install. That is why copy mode
 refuses it: with the refusal, a forced copy of the same project with the same
 `.worktreeinclude` finished in 3.3 seconds on the Dev Drive. Cloned
 on the Dev Drive, `node_modules/` saves about as much install time as the clone
-costs. Before its state files were rewritten, pnpm refused to use a carried
+costs. On APFS it saved about 1.5 seconds, 13 percent, and disk too: after the
+install a worktree took 1.5 GiB natively, 1.1 GiB with Multibox and 0.8 GiB
+with `node_modules/` carried. In every carried copy, no link and no pnpm state
+file pointed at the source. Before its state files were rewritten, pnpm refused to use a carried
 `node_modules/` and asked to reinstall from scratch.
 
 `git worktree remove` failed on NTFS with "Filename too long" both times it met
@@ -164,7 +171,6 @@ worktree, on both drives; every later run matched git. This was not investigated
 
 ## Still to measure
 
-- pnpm's `node_modules/` cloned on APFS.
 - Native import time and reopening on macOS.
 - Worktree editors with a window, rather than batch mode.
 - Linux, beyond the automated tests.

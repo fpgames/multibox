@@ -5,9 +5,9 @@ const LOCKFILE: &str = "pnpm-lock.yaml";
 
 /// pnpm links every package from a store shared by all projects on the volume,
 /// so a fresh `pnpm install` costs little time and almost no space. Copying
-/// `node_modules/` was slower than that, and cloning it on a Dev Drive no
-/// faster. It is therefore never carried in copy mode, and with reflinks only
-/// when `.worktreeinclude` asks for it.
+/// `node_modules/` was slower than that; cloning it was no faster on a Dev
+/// Drive and only slightly faster on APFS. It is therefore never carried in
+/// copy mode, and with reflinks only when `.worktreeinclude` asks for it.
 ///
 /// When it is carried, two state files still name the source: pnpm compares
 /// the virtual store path in `.modules.yaml` with its own and offers to delete

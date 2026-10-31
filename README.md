@@ -173,8 +173,8 @@ progress, and `build_plan` reports the cost of a worktree before creating it.
 
 ## Status
 
-Early. Tested end to end with real Unity 6 projects and a Rust workspace on
-Windows and macOS, and with a pnpm monorepo on Windows. Linux passes the automated
+Early. Tested end to end on Windows and macOS with real Unity 6 projects, a
+Rust workspace and a pnpm monorepo. Linux passes the automated
 tests but has not been run against a real project. Unreal Engine is planned.
 
 ## License
