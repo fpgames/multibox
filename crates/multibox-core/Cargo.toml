@@ -1,0 +1,23 @@
+[package]
+name = "multibox-core"
+description = "Engine behind git-multibox: git worktrees that carry game-engine caches"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+multibox-clone.workspace = true
+ignore.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

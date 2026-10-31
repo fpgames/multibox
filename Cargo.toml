@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = ["crates/multibox-clone", "crates/multibox-core", "crates/git-multibox"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/fpgames/multibox"
+
+[workspace.dependencies]
+multibox-clone = { path = "crates/multibox-clone", version = "0.1.0" }
+multibox-core = { path = "crates/multibox-core", version = "0.1.0" }
+ignore = "0.4"
+libc = "0.2"
+sha1 = "0.10"
+sha2 = "0.10"
+tempfile = "3"
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_Ioctl",
+  "Win32_System_Threading",
+] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

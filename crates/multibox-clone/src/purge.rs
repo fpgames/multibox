@@ -1,0 +1,90 @@
+use crate::scan::{Decision, ScanRequest, scan};
+use crate::{join, thread_count};
+use std::fs;
+use std::io;
+use std::path::Path;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[derive(Debug, Default)]
+pub struct PurgeReport {
+    pub files: u64,
+    pub dirs: u64,
+    pub failures: Vec<String>,
+}
+
+fn remove_file(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+            let mut permissions = fs::symlink_metadata(path)?.permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            permissions.set_readonly(false);
+            fs::set_permissions(path, permissions)?;
+            fs::remove_file(path)
+        }
+        other => other,
+    }
+}
+
+/// Deletes `root` and everything below it, in parallel. Links are removed, never
+/// followed, so a junction inside the tree cannot reach data outside it.
+pub fn purge(root: &Path, threads: Option<usize>) -> io::Result<PurgeReport> {
+    let threads = thread_count(threads);
+    let everything = |_: &str, _: bool| Decision::Include;
+    let manifest = scan(
+        root,
+        &ScanRequest {
+            files: Vec::new(),
+            links: Vec::new(),
+            trees: vec![String::new()],
+            filter: &everything,
+            threads: Some(threads),
+        },
+    )?;
+    let root = fs::canonicalize(root)?;
+    let failures = Mutex::new(Vec::new());
+
+    let leaves: Vec<&str> = manifest
+        .files
+        .iter()
+        .map(|file| file.rel.as_str())
+        .chain(manifest.links.iter().map(|link| link.rel.as_str()))
+        .collect();
+    let cursor = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                loop {
+                    let start = cursor.fetch_add(64, Ordering::Relaxed);
+                    if start >= leaves.len() {
+                        return;
+                    }
+                    for rel in &leaves[start..(start + 64).min(leaves.len())] {
+                        let path = join(&root, rel);
+                        // A directory link needs remove_dir on Windows.
+                        if let Err(err) = remove_file(&path).or_else(|_| fs::remove_dir(&path)) {
+                            failures.lock().unwrap().push(format!("{rel}: {err}"));
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    let mut dirs: Vec<&str> = manifest.dirs.iter().map(|dir| dir.rel.as_str()).collect();
+    dirs.sort_unstable_by_key(|rel| std::cmp::Reverse(rel.len()));
+    for rel in &dirs {
+        if let Err(err) = fs::remove_dir(join(&root, rel)) {
+            failures.lock().unwrap().push(format!("{rel}: {err}"));
+        }
+    }
+    if let Err(err) = fs::remove_dir(&root) {
+        failures.lock().unwrap().push(format!(".: {err}"));
+    }
+
+    Ok(PurgeReport {
+        files: leaves.len() as u64,
+        dirs: dirs.len() as u64,
+        failures: failures.into_inner().unwrap(),
+    })
+}

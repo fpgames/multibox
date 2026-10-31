@@ -1,0 +1,113 @@
+//! Engine adapters teach Multibox what a project's caches look like.
+//!
+//! An adapter only describes a project; it does no file work of its own. That
+//! keeps the clone pipeline identical for every engine, so adding one means
+//! answering four questions: where are the projects, which ignored paths are
+//! worth carrying, which must stay behind, and is an editor using this project?
+
+mod unity;
+
+pub use unity::Unity;
+
+use std::path::{Path, PathBuf};
+
+/// A project found inside the repository.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Project {
+    pub engine: &'static str,
+    /// Project root relative to the worktree root; empty for the root itself.
+    pub root: String,
+    pub version: Option<String>,
+}
+
+impl Project {
+    pub fn path(&self, relative: &str) -> String {
+        if self.root.is_empty() {
+            relative.to_owned()
+        } else {
+            format!("{}/{relative}", self.root)
+        }
+    }
+}
+
+/// An editor process holding a project open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Editor {
+    pub process_id: Option<u32>,
+}
+
+pub trait Adapter: Sync {
+    /// Finds projects from the list of tracked paths.
+    fn detect(&self, worktree: &Path, tracked: &[&str]) -> Vec<Project>;
+    /// Gitignore-style patterns, relative to the worktree root.
+    fn includes(&self, project: &Project) -> Vec<String>;
+    /// Patterns that override [`Adapter::includes`].
+    fn excludes(&self, project: &Project) -> Vec<String>;
+    /// Files that change while an editor runs, used to detect a torn snapshot.
+    fn volatile_files(&self, project: &Project) -> Vec<String>;
+    fn running_editor(&self, worktree: &Path, project: &Project) -> Option<Editor>;
+}
+
+pub fn adapters() -> &'static [&'static dyn Adapter] {
+    &[&Unity]
+}
+
+fn adapter_for(project: &Project) -> Option<&'static dyn Adapter> {
+    match project.engine {
+        "unity" => Some(&Unity),
+        _ => None,
+    }
+}
+
+/// Every project in the repository, across all adapters.
+pub fn detect(worktree: &Path, tracked: &[&str]) -> Vec<Project> {
+    adapters()
+        .iter()
+        .flat_map(|adapter| adapter.detect(worktree, tracked))
+        .collect()
+}
+
+pub fn includes(project: &Project) -> Vec<String> {
+    adapter_for(project).map_or_else(Vec::new, |adapter| adapter.includes(project))
+}
+
+pub fn excludes(project: &Project) -> Vec<String> {
+    adapter_for(project).map_or_else(Vec::new, |adapter| adapter.excludes(project))
+}
+
+pub fn volatile_files(worktree: &Path, project: &Project) -> Vec<PathBuf> {
+    adapter_for(project).map_or_else(Vec::new, |adapter| {
+        adapter
+            .volatile_files(project)
+            .iter()
+            .map(|rel| worktree.join(rel))
+            .collect()
+    })
+}
+
+pub fn running_editor(worktree: &Path, project: &Project) -> Option<Editor> {
+    adapter_for(project).and_then(|adapter| adapter.running_editor(worktree, project))
+}
+
+#[cfg(windows)]
+pub(crate) fn process_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(handle, &mut code);
+        CloseHandle(handle);
+        ok != 0 && code == STILL_ACTIVE as u32
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn process_alive(pid: u32) -> bool {
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}

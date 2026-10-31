@@ -1,0 +1,16 @@
+[package]
+name = "git-multibox"
+description = "git worktree, built for game development"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "git-multibox"
+path = "src/main.rs"
+
+[dependencies]
+multibox-clone.workspace = true
+multibox-core.workspace = true
