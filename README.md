@@ -133,8 +133,9 @@ progress, and `build_plan` reports the cost of a worktree before creating it.
 
 ## Status
 
-Early. Tested end to end on Windows with Unity 6. macOS and Linux compile but
-have not been run against a real project yet. Unreal Engine is planned.
+Early. Tested end to end with real Unity 6 projects on Windows and macOS. Linux
+passes the automated tests but has not been run against a real project. Unreal
+Engine is planned.
 
 ## License
 

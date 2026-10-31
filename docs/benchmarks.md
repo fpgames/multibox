@@ -97,13 +97,21 @@ not hold still long enough to be copied.
 
 ## macOS
 
-On an arm64 Mac Studio with APFS, using a synthetic repository of 120,005 files and
-5 GB of data: 5.3 seconds to create, 34 to 90 MiB of disk per worktree, and 0.05
-seconds to remove. A native worktree of the tracked files alone took 3.8 seconds
-and 2.9 GiB. No real Unity project has been measured on macOS yet.
+A real Unity 6000.3 project on an M4 Mac mini with APFS: 202,929 files and 47 GiB,
+including a 39 GiB `Library/`, with 41,164 files in Git LFS.
+
+| | Native `git worktree` | Multibox |
+| --- | --- | --- |
+| Create | 48.8 s | 15.2 s |
+| Disk per worktree | 8.4 GiB, no `Library/` | 110 MiB, `Library/` included |
+| First Unity launch | not measured | 82.3 s, 1 import |
+
+A synthetic repository of 120,005 files and 5 GB on a Mac Studio took 5.3 seconds
+to create, and removal returns in 0.05 seconds. The native first launch and a reopen
+could not be measured: the editor on that machine lost its license after one run.
 
 ## Still to measure
 
-- A real Unity project on macOS.
+- Native import time and reopening on macOS.
 - Worktree editors with a window, rather than batch mode.
 - Linux, beyond the automated tests.

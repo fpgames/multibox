@@ -102,9 +102,7 @@ impl Adapter for Unity {
             return None;
         }
         // Without a readable instance file the lockfile is the only evidence.
-        root.join("Temp/UnityLockfile")
-            .exists()
-            .then_some(Editor { process_id: None })
+        lockfile_held(&root.join("Temp/UnityLockfile")).then_some(Editor { process_id: None })
     }
 
     /// A bare `unity command` run in a project with no editor of its own falls
@@ -124,6 +122,32 @@ impl Adapter for Unity {
         };
         vec![("UNITY_PROJECT_PATH".to_owned(), path)]
     }
+}
+
+/// An editor that crashed or failed to start leaves its lockfile behind, so only a
+/// lock some process still holds counts as an open editor.
+#[cfg(windows)]
+fn lockfile_held(path: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    let opened = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(0)
+        .open(path);
+    matches!(opened, Err(err) if err.raw_os_error() == Some(ERROR_SHARING_VIOLATION))
+}
+
+/// An editor that crashed or failed to start leaves its lockfile behind, so only a
+/// lock some process still holds counts as an open editor.
+#[cfg(unix)]
+fn lockfile_held(path: &Path) -> bool {
+    use std::os::fd::AsRawFd;
+    let Ok(file) = fs::File::open(path) else {
+        return false;
+    };
+    let free = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+    !free
 }
 
 fn parse_version(text: &str) -> Option<String> {
@@ -165,6 +189,30 @@ mod tests {
     fn reads_process_id() {
         let text = "{\n  \"process_id\" : 19180,\n  \"version\" : \"6000\"\n}";
         assert_eq!(parse_process_id(text), Some(19180));
+    }
+
+    #[test]
+    fn a_leftover_lockfile_is_not_an_open_editor() {
+        let temp = tempfile::tempdir().unwrap();
+        let lockfile = temp.path().join("UnityLockfile");
+        fs::write(&lockfile, "").unwrap();
+        assert!(!lockfile_held(&lockfile));
+        assert!(!lockfile_held(&temp.path().join("missing")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_lockfile_held_open_is_an_open_editor() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let lockfile = temp.path().join("UnityLockfile");
+        fs::write(&lockfile, "").unwrap();
+        let _held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&lockfile)
+            .unwrap();
+        assert!(lockfile_held(&lockfile));
     }
 
     #[test]

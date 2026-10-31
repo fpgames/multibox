@@ -445,6 +445,17 @@ fn remove_refuses_dirty_worktrees_without_force() {
 }
 
 #[test]
+fn remove_ignores_a_lockfile_left_by_a_crashed_editor() {
+    let (_temp, repo) = unity_repo();
+    add(&repo, &options("../wt", &["--detach"]), &Silent).unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+    write(&wt, "client/Temp/UnityLockfile", "");
+    let outcome = remove(&repo, &removal("../wt", 0)).unwrap();
+    assert!(!wt.exists());
+    purge_trash(&outcome.trash.unwrap()).unwrap();
+}
+
+#[test]
 fn remove_respects_locks() {
     let (_temp, repo) = unity_repo();
     add(&repo, &options("../wt", &["--detach", "--lock"]), &Silent).unwrap();
@@ -762,8 +773,12 @@ fn switch_brings_the_copy_up_to_date() {
 fn init_copies_while_the_editor_is_open_and_finishes_once_it_closes() {
     let (_temp, repo) = unity_repo();
     let destination = repo.parent().unwrap().join("area").join("game");
-    fs::remove_file(repo.join("client/Library/EditorInstance.json")).unwrap();
-    write(&repo, "client/Temp/UnityLockfile", "");
+    // A live process recorded as the editor, like a real open project.
+    write(
+        &repo,
+        "client/Library/EditorInstance.json",
+        &format!("{{\"process_id\" : {}}}\n", std::process::id()),
+    );
     let options = multibox_core::InitOptions {
         destination: Some(destination.clone()),
         ..Default::default()
@@ -779,7 +794,7 @@ fn init_copies_while_the_editor_is_open_and_finishes_once_it_closes() {
     assert!(destination.join("client/Library/ArtifactDB").exists());
 
     write(&repo, "client/Assets/a.txt", "edited during the copy\n");
-    fs::remove_file(repo.join("client/Temp/UnityLockfile")).unwrap();
+    fs::remove_file(repo.join("client/Library/EditorInstance.json")).unwrap();
 
     match multibox_core::init(&repo, &options, &Silent).unwrap() {
         multibox_core::InitOutcome::Switched {
