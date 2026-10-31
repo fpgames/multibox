@@ -93,6 +93,10 @@ pub trait Adapter: Sync {
     fn environment(&self, _worktree: &Path, _project: &Project) -> Vec<(String, String)> {
         Vec::new()
     }
+    /// Extra arguments for `git merge` when `finish` merges a branch back.
+    fn merge_options(&self, _project: &Project) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 pub fn adapters() -> &'static [&'static dyn Adapter] {
@@ -139,6 +143,22 @@ pub fn relocated(project: &Project) -> Vec<String> {
 
 pub fn volatile_files(project: &Project) -> Vec<String> {
     adapter_for(project).map_or_else(Vec::new, |adapter| adapter.volatile_files(project))
+}
+
+/// Merge arguments the projects ask for, each once, in detection order.
+pub fn merge_options(projects: &[Project]) -> Vec<String> {
+    let mut options: Vec<String> = Vec::new();
+    for project in projects {
+        let Some(adapter) = adapter_for(project) else {
+            continue;
+        };
+        for pair in adapter.merge_options(project).chunks(2) {
+            if !options.chunks(2).any(|seen| seen == pair) {
+                options.extend_from_slice(pair);
+            }
+        }
+    }
+    options
 }
 
 pub fn running_editor(worktree: &Path, project: &Project) -> Option<Editor> {

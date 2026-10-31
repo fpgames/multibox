@@ -28,7 +28,7 @@ fn same_path(a: &Path, b: &Path) -> bool {
     }
 }
 
-fn refuse_if_editor_open(repo: &Repo) -> Result<()> {
+pub(crate) fn refuse_if_editor_open(repo: &Repo) -> Result<()> {
     let Ok(index) = Index::read(&repo.index_path(), repo.hash_len) else {
         return Ok(());
     };
