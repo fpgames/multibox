@@ -26,7 +26,7 @@ pub use exec::{Failure, Options, Progress, Report, Strategy, execute};
 pub use purge::{PurgeReport, purge};
 pub use scan::{Decision, DirEntry, FileEntry, LinkEntry, Manifest, ScanRequest, TreeFilter, scan};
 pub use sync::{SyncReport, sync};
-pub use sys::{Capability, free_space, probe, volumes};
+pub use sys::{Capability, free_space, os_build, probe, volumes};
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -42,8 +42,7 @@ pub struct Volume {
     pub fixed: bool,
 }
 
-/// Timestamps carried across a clone. Git compares both on Windows, where the
-/// index `ctime` field holds the creation time.
+/// Timestamps of a directory, restored after its contents are in place.
 #[derive(Clone, Copy, Debug)]
 pub struct Times {
     pub modified: SystemTime,
@@ -66,7 +65,7 @@ pub(crate) fn thread_count(requested: Option<usize>) -> usize {
             std::thread::available_parallelism()
                 .map(usize::from)
                 .unwrap_or(4)
-                .min(24)
+                .min(32)
         })
         .max(1)
 }

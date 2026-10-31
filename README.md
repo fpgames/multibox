@@ -43,20 +43,27 @@ checkout and still carries the caches.
 | ReFS / Dev Drive | reflink | Shares data; only changed files take space |
 | NTFS, ext4 | copy | A full copy, still without a reimport |
 
-Copy mode needs no setup. On Windows, `git multibox setup` creates a Dev Drive
-inside a new VHDX file and `git multibox migrate` moves a project onto it.
+Copy mode needs no setup. To get reflinks on Windows, run `git multibox init`.
+It creates a Dev Drive inside a new VHDX file, without touching any existing
+volume, and moves the project onto it, since reflinks only work within a volume.
+The copy happens while you keep working. Close the editor when it is done, run
+`init` again, and it brings across what changed and redirects the old path to
+the new location. The original stays on disk until you delete it. Run `init` as
+many times as you like: it does whatever is left. On macOS it has nothing to do.
 
 ## Commands
 
 ```
 git multibox add [<options>] <path> [<commit-ish>]
 git multibox remove [-f] <worktree>
+git multibox init [--to <path>] [--exclude <path>]...
 git multibox doctor
 git multibox env
-git multibox setup [--vhdx <file>] [--size <GiB>] [--letter <X> | --folder <dir>]
-git multibox migrate <destination> [--exclude <path>]...
-git multibox migrate --switch <destination>
 ```
+
+`init` is built from two commands that can also be run alone, for scripted setups:
+`git multibox setup` creates the Dev Drive, and `git multibox migrate` copies and
+switches a project.
 
 `list`, `lock`, `unlock`, `move`, `prune` and `repair` go straight to `git worktree`.
 

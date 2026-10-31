@@ -135,6 +135,10 @@ pub fn probe(src: &Path, dst: &Path) -> io::Result<Capability> {
     })
 }
 
+pub fn os_build() -> Option<(u32, u32)> {
+    None
+}
+
 /// Unix volumes need no setup, so there is nothing to enumerate.
 pub fn volumes() -> Vec<Volume> {
     Vec::new()
@@ -158,12 +162,7 @@ fn copy(src: &Path, dst: &Path) -> io::Result<()> {
     target.set_times(FileTimes::new().set_modified(meta.modified()?))
 }
 
-pub fn clone_file(
-    src: &Path,
-    dst: &Path,
-    capability: &Capability,
-    _buffer: &mut [u8],
-) -> io::Result<Outcome> {
+pub fn clone_file(src: &Path, dst: &Path, capability: &Capability) -> io::Result<Outcome> {
     if capability.reflink {
         match reflink_file(src, dst) {
             Ok(()) => return Ok(Outcome::Reflinked),

@@ -1,6 +1,7 @@
-//! Windows backend. Reflinks use `FSCTL_DUPLICATE_EXTENTS_TO_FILE` (ReFS, and
-//! therefore Dev Drive); everything else is a hand-rolled copy so that the
-//! creation time, which git stores as `ctime`, survives on the same handle.
+//! Windows backend, built on `CopyFileExW`. It beats a hand-written copy several
+//! times over on small files, and from Windows 11 24H2 it block-clones on ReFS by
+//! itself, in one step and twice as fast as issuing the clone by hand. Older Dev
+//! Drives get an explicit `FSCTL_DUPLICATE_EXTENTS_TO_FILE`.
 
 use crate::{Times, Volume};
 use std::ffi::c_void;
@@ -17,15 +18,15 @@ use windows_sys::Win32::Foundation::{
     GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_HIDDEN,
-    FILE_ATTRIBUTE_INTEGRITY_STREAM, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_NOT_CONTENT_INDEXED,
-    FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_SPARSE_FILE, FILE_ATTRIBUTE_SYSTEM, FILE_BASIC_INFO,
-    FILE_BEGIN, FILE_END_OF_FILE_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_SEQUENTIAL_SCAN,
-    FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO,
-    FILE_WRITE_ATTRIBUTES, FileBasicInfo, FileEndOfFileInfo, FileStandardInfo, GetDiskFreeSpaceExW,
-    GetDiskFreeSpaceW, GetDriveTypeW, GetFileInformationByHandleEx, GetLogicalDrives,
-    GetVolumeInformationW, GetVolumePathNameW, OPEN_EXISTING, ReadFile, SetFileInformationByHandle,
-    SetFilePointerEx, WriteFile,
+    COPY_FILE_FAIL_IF_EXISTS, CREATE_NEW, CopyFileExW, CreateFileW, FILE_ATTRIBUTE_ARCHIVE,
+    FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_INTEGRITY_STREAM, FILE_ATTRIBUTE_NORMAL,
+    FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_SPARSE_FILE,
+    FILE_ATTRIBUTE_SYSTEM, FILE_BASIC_INFO, FILE_END_OF_FILE_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_SEQUENTIAL_SCAN, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, FILE_STANDARD_INFO, FILE_WRITE_ATTRIBUTES, FileBasicInfo, FileEndOfFileInfo,
+    FileStandardInfo, GetDiskFreeSpaceExW, GetDiskFreeSpaceW, GetDriveTypeW,
+    GetFileInformationByHandleEx, GetLogicalDrives, GetVolumeInformationW, GetVolumePathNameW,
+    OPEN_EXISTING, SetFileInformationByHandle,
 };
 use windows_sys::Win32::System::IO::DeviceIoControl;
 
@@ -35,6 +36,9 @@ const FSCTL_DUPLICATE_EXTENTS_TO_FILE: u32 = 0x0009_8344;
 const FSCTL_GET_INTEGRITY_INFORMATION: u32 = 0x0009_027C;
 const FSCTL_SET_INTEGRITY_INFORMATION: u32 = 0x0009_C280;
 const FSCTL_SET_SPARSE: u32 = 0x0009_00C4;
+
+/// Windows 11 24H2, where `CopyFileExW` started cloning on ReFS.
+const NATIVE_CLONE_BUILD: u32 = 26100;
 
 /// A single duplicate-extents call must stay under 4 GiB.
 const MAX_CLONE_CHUNK: u64 = 1 << 30;
@@ -70,6 +74,8 @@ pub struct Capability {
     pub same_volume: bool,
     pub filesystem: String,
     pub cluster_size: u32,
+    /// `CopyFileExW` clones by itself, so no explicit ioctl is needed.
+    pub clones_natively: bool,
 }
 
 pub enum Outcome {
@@ -184,7 +190,22 @@ pub fn probe(src: &Path, dst: &Path) -> io::Result<Capability> {
         same_volume,
         filesystem: dst_info.filesystem,
         cluster_size: cluster_size(&dst_root)?,
+        clones_natively: os_build().is_some_and(|(build, _)| build >= NATIVE_CLONE_BUILD),
     })
+}
+
+/// Windows build and revision. `ver` is the one source that reports the real
+/// version without a manifest, and its digits do not depend on the language.
+pub fn os_build() -> Option<(u32, u32)> {
+    let output = Command::new("cmd").args(["/c", "ver"]).output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let start = text.find("10.0.")? + "10.0.".len();
+    let digits: String = text[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let (build, revision) = digits.split_once('.').unwrap_or((digits.as_str(), "0"));
+    Some((build.parse().ok()?, revision.parse().unwrap_or(0)))
 }
 
 /// Every lettered volume on the machine. Removable or unready drives are listed
@@ -367,52 +388,7 @@ fn reflink(
     Ok(())
 }
 
-fn copy(source: &Handle, target: &Handle, size: u64, buffer: &mut [u8]) -> io::Result<()> {
-    if size >= 1 << 20 {
-        set_length(target, size)?;
-    }
-    loop {
-        let mut read = 0u32;
-        check(unsafe {
-            ReadFile(
-                source.0,
-                buffer.as_mut_ptr(),
-                buffer.len() as u32,
-                &mut read,
-                null_mut(),
-            )
-        })?;
-        if read == 0 {
-            return Ok(());
-        }
-        let mut pending = &buffer[..read as usize];
-        while !pending.is_empty() {
-            let mut written = 0u32;
-            check(unsafe {
-                WriteFile(
-                    target.0,
-                    pending.as_ptr(),
-                    pending.len() as u32,
-                    &mut written,
-                    null_mut(),
-                )
-            })?;
-            pending = &pending[written as usize..];
-        }
-    }
-}
-
-fn rewind(file: &Handle) -> io::Result<()> {
-    set_length(file, 0)?;
-    check(unsafe { SetFilePointerEx(file.0, 0, null_mut(), FILE_BEGIN) })
-}
-
-fn clone_into(
-    source: &Handle,
-    target: &Handle,
-    capability: &Capability,
-    buffer: &mut [u8],
-) -> io::Result<Outcome> {
+fn reflink_into(source: &Handle, target: &Handle, capability: &Capability) -> io::Result<()> {
     let mut basic: FILE_BASIC_INFO = unsafe { zeroed() };
     let mut standard: FILE_STANDARD_INFO = unsafe { zeroed() };
     check(unsafe {
@@ -431,28 +407,13 @@ fn clone_into(
             size_of::<FILE_STANDARD_INFO>() as u32,
         )
     })?;
-    let size = standard.EndOfFile as u64;
-
-    let outcome = if capability.reflink && size > 0 {
-        match reflink(
-            source,
-            target,
-            size,
-            basic.FileAttributes,
-            capability.cluster_size,
-        ) {
-            Ok(()) => Outcome::Reflinked,
-            Err(_) => {
-                rewind(target)?;
-                copy(source, target, size, buffer)?;
-                Outcome::Fallback
-            }
-        }
-    } else {
-        copy(source, target, size, buffer)?;
-        Outcome::Copied
-    };
-
+    reflink(
+        source,
+        target,
+        standard.EndOfFile as u64,
+        basic.FileAttributes,
+        capability.cluster_size,
+    )?;
     basic.FileAttributes &= FILE_ATTRIBUTE_READONLY
         | FILE_ATTRIBUTE_HIDDEN
         | FILE_ATTRIBUTE_SYSTEM
@@ -468,24 +429,58 @@ fn clone_into(
             &basic as *const _ as *const c_void,
             size_of::<FILE_BASIC_INFO>() as u32,
         )
-    })?;
-    Ok(outcome)
+    })
 }
 
-pub fn clone_file(
-    src: &Path,
-    dst: &Path,
-    capability: &Capability,
-    buffer: &mut [u8],
-) -> io::Result<Outcome> {
+fn explicit_reflink(src: &Path, dst: &Path, capability: &Capability) -> io::Result<()> {
     let source = open_source(src)?;
     let target = create_target(dst)?;
-    let result = clone_into(&source, &target, capability, buffer);
+    let result = reflink_into(&source, &target, capability);
     drop(target);
     if result.is_err() {
         let _ = fs::remove_file(dst);
     }
     result
+}
+
+fn system_copy(src: &Path, dst: &Path) -> io::Result<()> {
+    let (from, to) = (wide(src), wide(dst));
+    let copied = unsafe {
+        CopyFileExW(
+            from.as_ptr(),
+            to.as_ptr(),
+            None,
+            null(),
+            null_mut(),
+            COPY_FILE_FAIL_IF_EXISTS,
+        )
+    };
+    match check(copied) {
+        Err(err) if err.raw_os_error() == Some(ERROR_FILE_EXISTS as i32) => {
+            Err(io::Error::new(io::ErrorKind::AlreadyExists, err))
+        }
+        other => other,
+    }
+}
+
+pub fn clone_file(src: &Path, dst: &Path, capability: &Capability) -> io::Result<Outcome> {
+    if capability.reflink && !capability.clones_natively {
+        match explicit_reflink(src, dst, capability) {
+            Ok(()) => return Ok(Outcome::Reflinked),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Err(err),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => return Err(err),
+            Err(_) => {
+                system_copy(src, dst)?;
+                return Ok(Outcome::Fallback);
+            }
+        }
+    }
+    system_copy(src, dst)?;
+    Ok(if capability.reflink {
+        Outcome::Reflinked
+    } else {
+        Outcome::Copied
+    })
 }
 
 /// Recreates a link. Junctions and directory symlinks fall back to a junction

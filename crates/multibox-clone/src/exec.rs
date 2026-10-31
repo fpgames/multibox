@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 const BATCH: usize = 64;
-const COPY_BUFFER: usize = 1 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Strategy {
@@ -208,11 +207,11 @@ pub fn execute(
         &manifest.files,
         threads,
         BATCH,
-        || (Tally::default(), vec![0u8; COPY_BUFFER]),
-        |(tally, buffer), file| {
+        Tally::default,
+        |tally, file| {
             let from = join(&src, &file.rel);
             let to = join(&dst, &file.rel);
-            match sys::clone_file(&from, &to, &capability, buffer) {
+            match sys::clone_file(&from, &to, &capability) {
                 Ok(Outcome::Reflinked) => tally.reflinked += 1,
                 Ok(Outcome::Copied) => tally.copied += 1,
                 Ok(Outcome::Fallback) => {
@@ -238,7 +237,7 @@ pub fn execute(
         dirs: manifest.dirs.len() as u64,
         ..Report::default()
     };
-    for (tally, _) in tallies {
+    for tally in tallies {
         report.reflinked += tally.reflinked;
         report.copied += tally.copied;
         report.fallbacks += tally.fallbacks;

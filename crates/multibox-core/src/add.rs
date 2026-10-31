@@ -1,8 +1,6 @@
 use crate::adapter;
 use crate::git::{self, Repo};
-use crate::index::Index;
-#[cfg(unix)]
-use crate::index::Stat;
+use crate::index::{Index, Stat};
 use crate::plan::{Plan, PlanSummary, build_plan};
 use crate::{Error, Result};
 use multibox_clone::{
@@ -180,6 +178,14 @@ fn resolve_mode(mode: Mode) -> Strategy {
     }
 }
 
+fn time_parts(time: std::io::Result<SystemTime>) -> (u32, u32) {
+    time.ok()
+        .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map_or((0, 0), |since| {
+            (since.as_secs() as u32, since.subsec_nanos())
+        })
+}
+
 /// The stat data git would compute for this file.
 #[cfg(unix)]
 fn stat_of(meta: &fs::Metadata) -> Stat {
@@ -197,10 +203,25 @@ fn stat_of(meta: &fs::Metadata) -> Stat {
     }
 }
 
+/// The stat data git would compute for this file. Git for Windows stores zero
+/// for dev, ino, uid and gid, and the creation time as ctime.
+#[cfg(windows)]
+fn stat_of(meta: &fs::Metadata) -> Stat {
+    let (ctime_sec, ctime_nsec) = time_parts(meta.created());
+    let (mtime_sec, mtime_nsec) = time_parts(meta.modified());
+    Stat {
+        ctime_sec,
+        ctime_nsec,
+        mtime_sec,
+        mtime_nsec,
+        size: meta.len() as u32,
+        ..Stat::default()
+    }
+}
+
 /// Whether the source file is certainly what the index says it is. Git builds
 /// differ on nanosecond support, so a recorded zero is not a mismatch. A file
 /// no older than the index itself is "racy": its stat data proves nothing.
-#[cfg(unix)]
 fn clean_in_source(recorded: &Stat, actual: &Stat, index_time: (u32, u32)) -> bool {
     let time_matches = |recorded: (u32, u32), actual: (u32, u32)| {
         recorded.0 == actual.0 && (recorded.1 == 0 || recorded.1 == actual.1)
@@ -218,41 +239,48 @@ fn clean_in_source(recorded: &Stat, actual: &Stat, index_time: (u32, u32)) -> bo
         && (actual.mtime_sec, actual.mtime_nsec) < index_time
 }
 
-/// A clone gets a new inode and ctime, neither of which can be set, so cached
-/// stat data has to be rewritten to match what git will see in the new worktree.
+/// A clone differs from its source in ways that cannot be set back: a new inode
+/// and ctime on Unix, a new creation time on Windows. Cached stat data therefore
+/// has to be rewritten to match what git will see in the new worktree.
 ///
 /// Only entries that are clean in the source qualify. A file edited there must
 /// keep its stale entry: rewriting it would tell git the clone's content is
 /// what the index records, and the edit would survive `reset --hard` unseen.
-#[cfg(unix)]
 fn refresh_stat(index: &mut Index, source: &Path, index_path: &Path, worktree: &Path) {
-    use std::os::unix::fs::MetadataExt;
     let Ok(index_meta) = fs::metadata(index_path) else {
         return;
     };
-    let index_time = (index_meta.mtime() as u32, index_meta.mtime_nsec() as u32);
-    for at in 0..index.entries.len() {
-        let path = &index.entries[at].path;
-        let (Ok(original), Ok(clone)) = (
-            fs::symlink_metadata(source.join(path)),
-            fs::symlink_metadata(worktree.join(path)),
-        ) else {
-            continue;
-        };
-        let Ok(recorded) = index.stat(at) else {
-            continue;
-        };
-        if clean_in_source(&recorded, &stat_of(&original), index_time) {
-            index.set_stat(at, &stat_of(&clone));
-        }
+    let index_time = time_parts(index_meta.modified());
+    let shared: &Index = index;
+    let entries = shared.entries.len();
+    let threads = std::thread::available_parallelism().map_or(4, usize::from);
+    let chunk = (entries / threads.min(16)).max(1);
+    let updates: Vec<(usize, Stat)> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..entries)
+            .step_by(chunk)
+            .map(|start| {
+                scope.spawn(move || {
+                    (start..(start + chunk).min(entries))
+                        .filter_map(|at| {
+                            let path = &shared.entries[at].path;
+                            let original = fs::symlink_metadata(source.join(path)).ok()?;
+                            let clone = fs::symlink_metadata(worktree.join(path)).ok()?;
+                            let recorded = shared.stat(at).ok()?;
+                            clean_in_source(&recorded, &stat_of(&original), index_time)
+                                .then(|| (at, stat_of(&clone)))
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|worker| worker.join().expect("stat worker panicked"))
+            .collect()
+    });
+    for (at, stat) in updates {
+        index.set_stat(at, &stat);
     }
-}
-
-#[cfg(windows)]
-fn refresh_stat(_index: &mut Index, _source: &Path, _index_path: &Path, _worktree: &Path) {
-    // Git for Windows stores zero for ino, dev, uid and gid, and the creation
-    // time as ctime. Both timestamps survive a clone, so the entries still match,
-    // and a file edited in the source still mismatches, as it should.
 }
 
 /// Installs the source index in the new worktree, then makes the worktree an
@@ -459,7 +487,7 @@ pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

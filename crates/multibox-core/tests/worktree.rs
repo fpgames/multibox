@@ -284,8 +284,6 @@ fn keeps_timestamps_of_tracked_and_cached_files() {
             clone.modified().unwrap(),
             "{rel}"
         );
-        #[cfg(windows)]
-        assert_eq!(source.created().unwrap(), clone.created().unwrap(), "{rel}");
     }
 }
 

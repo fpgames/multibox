@@ -38,29 +38,13 @@ impl Diagnosis {
     }
 }
 
-/// Parses the build number out of `ver`, whose wording depends on the system
-/// language: `Microsoft Windows [Version 10.0.26200.8037]`.
-pub fn parse_windows_build(ver: &str) -> Option<(u32, u32)> {
-    let start = ver.find("10.0.")? + "10.0.".len();
-    let digits: String = ver[start..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit() || *c == '.')
-        .collect();
-    let (build, revision) = digits.split_once('.').unwrap_or((digits.as_str(), "0"));
-    Some((build.parse().ok()?, revision.parse().unwrap_or(0)))
-}
-
 /// Dev Drive shipped in Windows 11 22H2 build 22621.2338.
 pub fn supports_dev_drive(build: u32, revision: u32) -> bool {
     build > 22621 || (build == 22621 && revision >= 2338)
 }
 
 pub fn windows_build() -> Option<(u32, u32)> {
-    if !cfg!(windows) {
-        return None;
-    }
-    let out = Command::new("cmd").args(["/c", "ver"]).output().ok()?;
-    parse_windows_build(&String::from_utf8_lossy(&out.stdout))
+    multibox_clone::os_build()
 }
 
 fn tool_version(tool: &str) -> Option<String> {
@@ -206,18 +190,6 @@ pub fn diagnose(cwd: &Path) -> Diagnosis {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_any_language() {
-        assert_eq!(
-            parse_windows_build("Microsoft Windows [Version 10.0.26200.8037]"),
-            Some((26200, 8037))
-        );
-        assert_eq!(
-            parse_windows_build("Microsoft Windows [版本 10.0.22621.2338]"),
-            Some((22621, 2338))
-        );
-    }
 
     #[test]
     fn dev_drive_cutoff() {
