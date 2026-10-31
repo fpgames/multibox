@@ -78,6 +78,10 @@ impl TreeFilter for CopyFilter {
     }
 }
 
+fn same_directory(a: &Path, b: &Path) -> bool {
+    matches!((fs::canonicalize(a), fs::canonicalize(b)), (Ok(a), Ok(b)) if a == b)
+}
+
 fn main_worktree(cwd: &Path) -> Result<Repo> {
     let repo = Repo::discover(cwd)?;
     let list = git::worktrees(cwd)?;
@@ -197,6 +201,12 @@ pub struct SwitchOutcome {
 /// deleted. Linked worktrees stay where they are and are repointed.
 pub fn switch(cwd: &Path, destination: &Path, exclude: &[String]) -> Result<SwitchOutcome> {
     let repo = main_worktree(cwd)?;
+    if same_directory(destination, &repo.worktree) {
+        return Err(Error::new(format!(
+            "{} is already the project; nothing to switch",
+            destination.display()
+        )));
+    }
     let destination = fs::canonicalize(destination)?;
     if !destination.join(".git").is_dir() {
         return Err(Error::new(format!(
@@ -379,16 +389,16 @@ fn ensure_area(options: &InitOptions, observer: &dyn Observer) -> Result<PathBuf
 pub fn init(cwd: &Path, options: &InitOptions, observer: &dyn Observer) -> Result<InitOutcome> {
     let repo = main_worktree(cwd)?;
     let capability = probe(&repo.worktree, &repo.worktree)?;
-    let already_there = options.destination.as_ref().is_none_or(|path| {
-        fs::canonicalize(path)
-            .is_ok_and(|path| fs::canonicalize(&repo.worktree).is_ok_and(|repo| path == repo))
-    });
-    if capability.reflink && already_there {
+    let moved_already = options
+        .destination
+        .as_deref()
+        .is_some_and(|path| same_directory(path, &repo.worktree));
+    if capability.reflink && (options.destination.is_none() || moved_already) {
         return Ok(InitOutcome::Ready {
             filesystem: capability.filesystem,
         });
     }
-    if options.destination.is_none() && !cfg!(windows) {
+    if moved_already || (options.destination.is_none() && !cfg!(windows)) {
         return Ok(InitOutcome::CopyModeOnly {
             filesystem: capability.filesystem,
         });

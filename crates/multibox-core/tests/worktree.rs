@@ -230,11 +230,13 @@ fn init_is_a_no_op_once_the_project_has_moved() {
     };
     fs::remove_file(repo.join("client/Library/EditorInstance.json")).unwrap();
     multibox_core::init(&repo, &options, &Silent).unwrap();
-    let again = multibox_core::init(&destination, &options, &Silent);
-    if let Ok(multibox_core::InitOutcome::Switched { .. }) = again {
-        panic!("a second run must not move the project onto itself");
-    }
+    let again = multibox_core::init(&destination, &options, &Silent).unwrap();
+    assert!(
+        !matches!(again, multibox_core::InitOutcome::Switched { .. }),
+        "a second run must not move the project onto itself: {again:?}"
+    );
     assert!(destination.join("README.md").exists());
+    assert!(multibox_core::switch(&destination, &destination, &[]).is_err());
 }
 
 #[test]
