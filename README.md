@@ -53,6 +53,24 @@ run `git multibox init --project <path>` from outside the project folder. It
 brings across what changed and redirects the old path to the new location. The original stays on disk until you delete it. Run `init` as
 many times as you like: it does whatever is left. On macOS it has nothing to do.
 
+## Never worse than `git worktree`
+
+Multibox only adds to what a native worktree gets, and only where that pays
+off. The measurements behind these rules are in
+[docs/benchmarks.md](docs/benchmarks.md):
+
+- **Without an adapter, a worktree is a native one.** Only tracked files are
+  cloned, plus what `.worktreeinclude` names. A Python, Go, npm or iOS project
+  gets exactly what `git worktree add` would give it.
+- **A cache is carried only if cloning it beats rebuilding it.** Where the
+  project's own tooling restores a cache faster, it stays behind.
+- **Nothing an adapter carries reaches back into the source.** Links into the
+  source tree follow the clone, files that record the project's path are
+  rewritten, and build output compiled from the project's own sources is rebuilt.
+- **Copy mode is frugal.** Without reflinks every carried byte costs disk space,
+  so large caches stay behind unless `.worktreeinclude` asks for them. Caches a
+  reinstall restores faster stay behind even then, with a warning.
+
 ## Commands
 
 ```
@@ -94,15 +112,37 @@ generated assets. `UserSettings/` and IDE projects come along too. `Temp/`,
 `Logs/`, `obj/`, and Multiplayer Play Mode's virtual players stay behind, along
 with everything that identifies the source editor (see below).
 
+**Rust** workspaces are found by a tracked `Cargo.toml` with `Cargo.lock` beside
+it. Compiled dependencies in `target/` come along: `deps/`, `build/` and
+`.fingerprint/` of every profile and target triple. Only the workspace's own
+packages compile again, and they always do: `env!("CARGO_MANIFEST_DIR")` bakes
+the source path into them, and Cargo would otherwise call the copies fresh, so
+tests in the new worktree would read and write the original's files. Every
+package without a `source` in `Cargo.lock` counts as the workspace's own, path
+dependencies included. In copy mode `target/` stays behind; add `target/` to
+`.worktreeinclude` to carry it anyway.
+
+**pnpm** projects are found by `pnpm-lock.yaml`. pnpm installs from a store
+shared between projects, which leaves a clone little to save, so `node_modules/`
+is not carried by default. In copy mode it stays behind even when
+`.worktreeinclude` names it. With reflinks it is carried when asked for, and the
+project path pnpm records in `node_modules/.modules.yaml` and its workspace
+state is rewritten for the new worktree; otherwise pnpm would offer to delete
+and reinstall everything.
+
 Everything else is opt-in through a `.worktreeinclude` file at the repository
 root. It uses gitignore syntax and only applies to ignored files:
 
 ```gitignore
 # Carry these ignored paths into new worktrees
 client/Bundles/
-node_modules/
+tools/downloads/
 !client/Bundles/iOS/
 ```
+
+Links in what you add are repointed at the new worktree, but other recorded
+paths are not, so check that a cache does not store absolute paths before
+adding it.
 
 ## Working next to an open editor
 
@@ -133,9 +173,9 @@ progress, and `build_plan` reports the cost of a worktree before creating it.
 
 ## Status
 
-Early. Tested end to end with real Unity 6 projects on Windows and macOS. Linux
-passes the automated tests but has not been run against a real project. Unreal
-Engine is planned.
+Early. Tested end to end with real Unity 6 projects on Windows and macOS, and
+with a Rust workspace and a pnpm monorepo on Windows. Linux passes the automated
+tests but has not been run against a real project. Unreal Engine is planned.
 
 ## License
 

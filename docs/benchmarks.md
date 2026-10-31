@@ -110,8 +110,58 @@ A synthetic repository of 120,005 files and 5 GB on a Mac Studio took 5.3 second
 to create, and removal returns in 0.05 seconds. The native first launch and a reopen
 could not be measured: the editor on that machine lost its license after one run.
 
+## Rust
+
+Multibox's own workspace on the same Windows workstation: 37 crates, 3 of them
+local, with `target/` already built in the source. Each row is the time to
+create the worktree and run `cargo test --no-run --offline` in it, over two runs.
+
+| | Create | Build | Crates compiled |
+| --- | --- | --- | --- |
+| Native `git worktree`, NTFS | 0.06 s | 5.0 to 5.1 s | 37 |
+| Multibox on NTFS | 0.41 to 0.48 s | 4.9 to 5.0 s | 37 |
+| Multibox on NTFS, `target/` in `.worktreeinclude` | 0.41 to 0.42 s | 2.5 to 2.6 s | 3 |
+| Native `git worktree`, Dev Drive | 0.06 s | 4.5 to 4.6 s | 37 |
+| Multibox on Dev Drive | 0.42 s | 2.0 to 2.1 s | 3 |
+
+On a repository this small Multibox takes about 0.35 seconds longer to create a
+worktree than git does. A one-crate workspace depending on `serde_json` printed
+`env!("CARGO_MANIFEST_DIR")`: in every worktree it named the worktree itself.
+Before the Rust adapter, a carried `target/` made Cargo reuse the source build,
+and the path still named the original.
+
+## pnpm
+
+The Cindy monorepo: 38 workspace projects and 2,328 packages, pnpm 10.33.2 with
+`node-linker=hoisted`, on the same workstation. Each row runs from creating the
+worktree until `pnpm install --frozen-lockfile` has finished, over two or three
+runs with the store already filled.
+
+| | Create | Install | Total | First `git status` |
+| --- | --- | --- | --- | --- |
+| Native `git worktree`, NTFS | 3.4 to 3.6 s | 26 s | 30 s | 0.13 to 0.26 s |
+| Multibox on NTFS | 3.4 to 3.8 s | 24 to 25 s | 28 s | 0.05 s |
+| Native `git worktree`, Dev Drive | 3.1 to 3.2 s | 22.6 s | 25.8 s | 0.12 to 0.43 s |
+| Multibox on Dev Drive | 3.1 s | 22.5 to 22.9 s | 25.7 s | 0.05 to 0.06 s |
+| Multibox on Dev Drive, `node_modules/` carried | 19.4 to 19.6 s | 5.8 s | 25.3 s | 0.05 s |
+
+Copying the 135,672 files of `node_modules/` on NTFS took 36 seconds and 7.0 GiB,
+against 1.8 GiB for a native worktree after its install. That is why copy mode
+refuses it: with the refusal, a forced copy of the same project with the same
+`.worktreeinclude` finished in 3.3 seconds on the Dev Drive. Cloned
+on the Dev Drive, `node_modules/` saves about as much install time as the clone
+costs. Before its state files were rewritten, pnpm refused to use a carried
+`node_modules/` and asked to reinstall from scratch.
+
+`git worktree remove` failed on NTFS with "Filename too long" both times it met
+`node_modules/`. `git multibox remove` deleted every worktree.
+
+The first Multibox run after a fresh checkout took 11 to 12 seconds to create a
+worktree, on both drives; every later run matched git. This was not investigated.
+
 ## Still to measure
 
+- pnpm's `node_modules/` cloned on APFS.
 - Native import time and reopening on macOS.
 - Worktree editors with a window, rather than batch mode.
 - Linux, beyond the automated tests.
