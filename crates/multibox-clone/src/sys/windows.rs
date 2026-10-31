@@ -2,7 +2,7 @@
 //! therefore Dev Drive); everything else is a hand-rolled copy so that the
 //! creation time, which git stores as `ctime`, survives on the same handle.
 
-use crate::Times;
+use crate::{Times, Volume};
 use std::ffi::c_void;
 use std::fs::{self, FileTimes, OpenOptions};
 use std::io;
@@ -22,8 +22,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_BEGIN, FILE_END_OF_FILE_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_SEQUENTIAL_SCAN,
     FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO,
     FILE_WRITE_ATTRIBUTES, FileBasicInfo, FileEndOfFileInfo, FileStandardInfo,
-    GetDiskFreeSpaceExW, GetDiskFreeSpaceW, GetFileInformationByHandleEx, GetVolumeInformationW,
-    GetVolumePathNameW, OPEN_EXISTING, ReadFile, SetFileInformationByHandle, SetFilePointerEx,
+    GetDiskFreeSpaceExW, GetDiskFreeSpaceW, GetDriveTypeW, GetFileInformationByHandleEx,
+    GetLogicalDrives, GetVolumeInformationW, GetVolumePathNameW, OPEN_EXISTING, ReadFile, SetFileInformationByHandle, SetFilePointerEx,
     WriteFile,
 };
 use windows_sys::Win32::System::IO::DeviceIoControl;
@@ -170,6 +170,34 @@ pub fn probe(src: &Path, dst: &Path) -> io::Result<Capability> {
         filesystem: dst_info.filesystem,
         cluster_size: cluster_size(&dst_root)?,
     })
+}
+
+/// Every lettered volume on the machine. Removable or unready drives are listed
+/// only if they answer.
+pub fn volumes() -> Vec<Volume> {
+    const DRIVE_FIXED: u32 = 3;
+    let mask = unsafe { GetLogicalDrives() };
+    (0..26u8)
+        .filter(|bit| mask & (1 << bit) != 0)
+        .filter_map(|bit| {
+            let root = format!("{}:\\", (b'A' + bit) as char);
+            let wide_root: Vec<u16> = root.encode_utf16().chain(Some(0)).collect();
+            let info = volume_info(&wide_root).ok()?;
+            let (mut free, mut total) = (0u64, 0u64);
+            check(unsafe {
+                GetDiskFreeSpaceExW(wide_root.as_ptr(), &mut free, &mut total, null_mut())
+            })
+            .ok()?;
+            Some(Volume {
+                root,
+                filesystem: info.filesystem,
+                reflink: info.flags & FILE_SUPPORTS_BLOCK_REFCOUNTING != 0,
+                free,
+                total,
+                fixed: unsafe { GetDriveTypeW(wide_root.as_ptr()) } == DRIVE_FIXED,
+            })
+        })
+        .collect()
 }
 
 /// Bytes available to the caller on the volume holding `path`.

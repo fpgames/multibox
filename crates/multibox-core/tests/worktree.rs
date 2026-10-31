@@ -344,3 +344,118 @@ fn purge_does_not_follow_junctions() {
         "survives\n"
     );
 }
+
+#[test]
+fn migrate_copies_without_touching_the_source_or_its_worktrees() {
+    let (_temp, repo) = unity_repo();
+    let base = repo.parent().unwrap().to_path_buf();
+    add(&repo, &options("../linked", &["--detach"]), &Silent).unwrap();
+    write(&repo, "client/Assets/a.txt", "uncommitted edit\n");
+    let before = status(&repo);
+
+    let destination = base.join("moved");
+    multibox_core::migrate(
+        &repo,
+        &multibox_core::MigrateOptions {
+            destination: destination.clone(),
+            dry_run: false,
+            threads: Some(2),
+        },
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(status(&repo), before, "source must be unchanged");
+    assert_eq!(git::worktrees(&repo).unwrap().len(), 2);
+    assert_eq!(git::worktrees(&base.join("linked")).unwrap().len(), 2);
+
+    // The copy is a working repository that does not claim the linked worktree.
+    assert_eq!(git::worktrees(&destination).unwrap().len(), 1);
+    assert_eq!(status(&destination), before);
+    assert_eq!(
+        fs::read_to_string(destination.join("client/Assets/a.txt")).unwrap(),
+        "uncommitted edit\n"
+    );
+    assert!(destination.join("client/Library/ArtifactDB").exists());
+    assert!(!destination.join("client/Library/ArtifactDB-lock").exists());
+    assert!(!destination.join("client/Temp").exists());
+}
+
+#[test]
+fn migrate_refuses_an_existing_destination() {
+    let (_temp, repo) = unity_repo();
+    let occupied = repo.parent().unwrap().join("moved");
+    write(&occupied, "precious.txt", "do not touch\n");
+    let result = multibox_core::migrate(
+        &repo,
+        &multibox_core::MigrateOptions {
+            destination: occupied.clone(),
+            dry_run: false,
+            threads: Some(2),
+        },
+        None,
+    );
+    assert!(result.is_err());
+    assert!(occupied.join("precious.txt").exists());
+}
+
+#[test]
+fn switch_keeps_the_original_and_redirects_the_old_path() {
+    let (_temp, repo) = unity_repo();
+    let base = repo.parent().unwrap().to_path_buf();
+    add(&repo, &options("../linked", &["--detach"]), &Silent).unwrap();
+    let destination = base.join("moved");
+    multibox_core::migrate(
+        &repo,
+        &multibox_core::MigrateOptions {
+            destination: destination.clone(),
+            dry_run: false,
+            threads: Some(2),
+        },
+        None,
+    )
+    .unwrap();
+
+    let outcome = multibox_core::switch(&repo, &destination).unwrap();
+
+    assert!(outcome.kept_at.join("README.md").exists(), "original kept");
+    assert!(repo.join("README.md").exists(), "old path still resolves");
+    assert_eq!(status(&repo), "");
+    assert_eq!(status(&destination), "");
+
+    // Commits made through either path land in the same repository, and the
+    // linked worktree keeps working.
+    let linked = base.join("linked");
+    assert_eq!(status(&linked), "");
+    assert_eq!(git::worktrees(&destination).unwrap().len(), 2);
+    write(&repo, "after.txt", "made through the old path\n");
+    sh(&repo, &["add", "after.txt"]);
+    sh(&repo, &["commit", "-q", "-m", "after"]);
+    assert!(destination.join("after.txt").exists());
+    assert_eq!(
+        sh(&linked, &["rev-parse", "master"]),
+        sh(&destination, &["rev-parse", "master"])
+    );
+}
+
+#[test]
+fn switch_refuses_a_stale_copy() {
+    let (_temp, repo) = unity_repo();
+    let destination = repo.parent().unwrap().join("moved");
+    multibox_core::migrate(
+        &repo,
+        &multibox_core::MigrateOptions {
+            destination: destination.clone(),
+            dry_run: false,
+            threads: Some(2),
+        },
+        None,
+    )
+    .unwrap();
+    write(&repo, "later.txt", "new work\n");
+    sh(&repo, &["add", "later.txt"]);
+    sh(&repo, &["commit", "-q", "-m", "later"]);
+
+    assert!(multibox_core::switch(&repo, &destination).is_err());
+    assert!(repo.join("later.txt").exists());
+}

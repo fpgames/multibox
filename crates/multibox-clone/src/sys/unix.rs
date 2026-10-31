@@ -1,6 +1,6 @@
 //! macOS and Linux backend: `clonefile` on APFS, `FICLONE` on Btrfs and XFS.
 
-use crate::Times;
+use crate::{Times, Volume};
 use std::ffi::CString;
 use std::fs::{self, File, FileTimes, OpenOptions};
 use std::io;
@@ -131,6 +131,11 @@ pub fn probe(src: &Path, dst: &Path) -> io::Result<Capability> {
         filesystem: filesystem_name(&info),
         cluster_size: info.f_bsize as u32,
     })
+}
+
+/// Unix volumes need no setup, so there is nothing to enumerate.
+pub fn volumes() -> Vec<Volume> {
+    Vec::new()
 }
 
 /// Bytes available to the caller on the volume holding `path`.

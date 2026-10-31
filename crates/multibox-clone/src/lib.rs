@@ -24,10 +24,21 @@ mod sys;
 pub use exec::{Failure, Options, Progress, Report, Strategy, execute};
 pub use purge::{PurgeReport, purge};
 pub use scan::{Decision, DirEntry, FileEntry, LinkEntry, Manifest, ScanRequest, TreeFilter, scan};
-pub use sys::{Capability, free_space, probe};
+pub use sys::{Capability, free_space, probe, volumes};
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+
+/// A mounted volume, as seen by `git multibox doctor` and `setup`.
+#[derive(Clone, Debug)]
+pub struct Volume {
+    pub root: String,
+    pub filesystem: String,
+    pub reflink: bool,
+    pub free: u64,
+    pub total: u64,
+    pub fixed: bool,
+}
 
 /// Timestamps carried across a clone. Git compares both on Windows, where the
 /// index `ctime` field holds the creation time.

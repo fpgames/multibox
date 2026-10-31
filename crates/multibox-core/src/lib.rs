@@ -7,17 +7,23 @@
 
 pub mod adapter;
 mod add;
+mod doctor;
 pub mod git;
 pub mod index;
+mod migrate;
 mod plan;
 mod remove;
 mod rules;
+mod setup;
 
 pub use add::{AddOptions, AddOutcome, Mode, Observer, add};
-pub use multibox_clone::{Capability, Progress, Report, Strategy};
+pub use doctor::{Check, Diagnosis, Level, diagnose};
+pub use migrate::{MigrateOptions, MigrateOutcome, SwitchOutcome, migrate, switch};
+pub use multibox_clone::{Capability, Progress, Report, Strategy, Volume};
 pub use plan::{Plan, PlanSummary, build_plan};
 pub use remove::{RemoveOptions, RemoveOutcome, purge_trash, remove, sweep_trash};
 pub use rules::Rules;
+pub use setup::{Mount, SetupOptions, SetupPlan, plan_setup, render_script, run_setup};
 
 use std::fmt;
 use std::io;

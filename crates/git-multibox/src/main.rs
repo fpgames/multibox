@@ -4,7 +4,9 @@
 //! every other subcommand is handed to git unchanged.
 
 use multibox_core::{
-    AddOptions, Mode, Observer, Progress, RemoveOptions, add, git, purge_trash, remove, sweep_trash,
+    AddOptions, Level, MigrateOptions, Mode, Mount, Observer, Progress, RemoveOptions,
+    SetupOptions, add, diagnose, git, migrate, plan_setup, purge_trash, remove, run_setup,
+    sweep_trash, switch,
 };
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -17,6 +19,10 @@ const USAGE: &str = "\
 usage: git multibox add [<options>] <path> [<commit-ish>]
        git multibox remove [-f] <worktree>
        git multibox <list|lock|move|prune|repair|unlock> ...
+       git multibox doctor
+       git multibox setup [--vhdx <file>] [--size <GiB>] [--letter <X> | --folder <dir>] [--dry-run]
+       git multibox migrate <destination> [--dry-run]
+       git multibox migrate --switch <destination>
 
 Multibox-specific options for add:
     --from <worktree>   clone from this worktree instead of the current one
@@ -246,6 +252,138 @@ fn run_remove(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
+fn run_doctor(cwd: &Path) -> Result<ExitCode, String> {
+    let report = diagnose(cwd);
+    for check in &report.checks {
+        let mark = match check.level {
+            Level::Ok => "ok  ",
+            Level::Info => "info",
+            Level::Warn => "warn",
+        };
+        println!("{mark}  {:<11} {}", check.name, check.detail);
+    }
+    if !report.volumes.is_empty() {
+        println!();
+        for volume in &report.volumes {
+            println!(
+                "      {:<4} {:<6} {:>7.0} GiB free of {:>7.0} GiB{}",
+                volume.root,
+                volume.filesystem,
+                gib(volume.free),
+                gib(volume.total),
+                if volume.reflink { "  reflinks" } else { "" }
+            );
+        }
+    }
+    let reflink = report.capability.as_ref().is_some_and(|c| c.reflink);
+    if !reflink && report.dev_drive_supported == Some(true) {
+        println!("\nNext: `git multibox setup` creates a Dev Drive; `git multibox migrate` then moves this project onto it.");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_setup_command(args: Vec<String>) -> Result<ExitCode, String> {
+    let mut options = SetupOptions::default();
+    let mut dry_run = false;
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--vhdx" => options.vhdx = Some(PathBuf::from(take_value(&mut args, "--vhdx")?)),
+            "--size" => {
+                let value = take_value(&mut args, "--size")?;
+                options.size_gib = Some(value.parse().map_err(|_| format!("bad --size: {value}"))?);
+            }
+            "--letter" => {
+                let value = take_value(&mut args, "--letter")?;
+                let letter = value
+                    .chars()
+                    .next()
+                    .filter(char::is_ascii_alphabetic)
+                    .ok_or_else(|| format!("bad --letter: {value}"))?;
+                options.mount = Some(Mount::Letter(letter.to_ascii_uppercase()));
+            }
+            "--folder" => {
+                options.mount = Some(Mount::Folder(PathBuf::from(take_value(
+                    &mut args, "--folder",
+                )?)));
+            }
+            "--dry-run" => dry_run = true,
+            other => return Err(format!("unknown option {other}")),
+        }
+    }
+    let plan = plan_setup(&options).map_err(|err| err.to_string())?;
+    let mount = match &plan.mount {
+        Mount::Letter(letter) => format!("{letter}:"),
+        Mount::Folder(path) => path.display().to_string(),
+    };
+    println!(
+        "Multibox will create a Dev Drive of up to {} GiB:\n  file   {} (grows on demand; no existing volume is touched)\n  mount  {mount}",
+        plan.size_gib,
+        plan.vhdx.display()
+    );
+    if dry_run {
+        return Ok(ExitCode::SUCCESS);
+    }
+    println!("Windows will ask for administrator approval.");
+    run_setup(&plan).map_err(|err| err.to_string())?;
+    println!("Dev Drive ready at {mount}. Move a project there with `git multibox migrate`.");
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_migrate(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
+    let mut destination = None;
+    let (mut dry_run, mut do_switch) = (false, false);
+    for arg in args {
+        match arg.as_str() {
+            "--dry-run" => dry_run = true,
+            "--switch" => do_switch = true,
+            flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
+            _ => destination = Some(PathBuf::from(arg)),
+        }
+    }
+    let destination = cwd.join(destination.ok_or("migrate needs a <destination>")?);
+    if do_switch {
+        let outcome = switch(cwd, &destination).map_err(|err| err.to_string())?;
+        println!(
+            "Switched. The original is kept at {}; delete it yourself once you are happy.",
+            outcome.kept_at.display()
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+    let terminal = Terminal::default();
+    let progress = Arc::new(Progress::default());
+    if !dry_run {
+        terminal.clone_started(0, 0, progress.clone());
+    }
+    let outcome = migrate(
+        cwd,
+        &MigrateOptions {
+            destination,
+            dry_run,
+            threads: None,
+        },
+        Some(progress),
+    );
+    terminal.clone_finished();
+    let outcome = outcome.map_err(|err| err.to_string())?;
+    if dry_run {
+        println!(
+            "would copy {} files ({:.1} GiB) to {}",
+            outcome.files,
+            gib(outcome.bytes),
+            outcome.destination.display()
+        );
+    } else {
+        println!(
+            "Copied {} files ({:.1} GiB) to {}. The source was not changed.\nTry it out, then run `git multibox migrate --switch <destination>`.",
+            outcome.files,
+            gib(outcome.bytes),
+            outcome.destination.display()
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 fn passthrough(cwd: &Path, subcommand: &str, args: Vec<String>) -> Result<ExitCode, String> {
     let mut full = vec!["worktree".to_owned(), subcommand.to_owned()];
     full.extend(args);
@@ -264,6 +402,9 @@ fn run() -> Result<ExitCode, String> {
     match subcommand.as_str() {
         "add" => run_add(&cwd, args),
         "remove" => run_remove(&cwd, args),
+        "doctor" => run_doctor(&cwd),
+        "setup" => run_setup_command(args),
+        "migrate" => run_migrate(&cwd, args),
         "__purge" => {
             let trash = args.first().ok_or("__purge needs a path")?;
             purge_trash(Path::new(trash)).map_err(|err| err.to_string())?;
