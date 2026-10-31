@@ -194,6 +194,81 @@ the same worktree, a step shows what a cache could save at most.
 - **Development build.** Most of it is Vite bundling the main process and its
   workers, which keeps no cache between runs. Nothing carried can help there.
 
+## Windows: three real projects against native worktrees
+
+The same workstation, on NTFS (copy mode) and on the Dev Drive (reflinks), with
+Multibox's defaults: nothing configured in any repository. Each project was
+checked out as a test copy with its caches built once, as a main checkout is
+in daily use. Rows average two rounds; the native Unity import ran once.
+Native worktrees were removed with `git worktree remove`.
+
+**Cindy**, a pnpm monorepo with seven Rust helpers: create, `pnpm install`,
+incremental type check, development build until the UI responds, installer.
+
+| | NTFS native | NTFS Multibox | Dev Drive native | Dev Drive Multibox |
+| --- | --- | --- | --- | --- |
+| Type check | 106.7 s | 19.7 s | 103.6 s | 17.1 s |
+| Installer | 274.6 s | 271.5 s | 262.3 s | 210.4 s |
+| All steps | 485 s | 384 s | 458 s | 319 s |
+| Disk after all steps | 4.9 GiB | 4.9 GiB | 4.6 GiB | 1.9 GiB |
+| Removal | failed twice | 9.4 s | failed twice | 5.1 s |
+
+`git worktree remove` failed on every Cindy worktree, on both drives: paths in
+`node_modules/` are too long for it. In copy mode the Rust helpers' `target/`
+stays behind by default, which is why the installer saves nothing on NTFS.
+
+**hhh**, a Rust workspace of 970 packages, 23 of them local, built through its
+own `scripts/task-run.py` into `.tmp/target`: create, then
+`cargo test --no-run`.
+
+| | NTFS native | NTFS Multibox | NTFS, `.tmp/target/` in `.worktreeinclude` | Dev Drive native | Dev Drive Multibox |
+| --- | --- | --- | --- | --- | --- |
+| Create | 6.4 s | 2.0 s | 11.6 s | 6.3 s | 2.3 s |
+| Build | 235.6 s | 234.0 s | 190.7 s | 225.0 s | 177.6 s |
+| Crates compiled | 581 | 581 | 52 | 581 | 52 |
+| Disk after the build | 30.2 GiB | 30.2 GiB | 30.2 GiB | 30.5 GiB | 23.6 GiB |
+| Removal | 7.1 s | 3.7 s | 4.4 s | 24.6 s | 6.7 s |
+
+All 22 local packages built were rebuilt every time. Four of the 101 test
+binaries built over carried dependencies still contain the source's path:
+panic locations of code cranelift generates into its `OUT_DIR` and includes.
+They name files, nothing opens them; a native build names its own target
+directory there instead.
+
+**flash-party-retro**, Unity 6 with 104,330 tracked files, the main editor open
+on the Dev Drive copy throughout: create, then the first batch-mode launch.
+
+| | NTFS native | NTFS Multibox | Dev Drive native | Dev Drive Multibox |
+| --- | --- | --- | --- | --- |
+| Create | 68 s | 60 s | 67 s | 47 s |
+| First launch | 1,044 s, 56,961 imports | 54 s, 1 import | 806 s, 56,961 imports | 33 s, 1 import |
+| Disk after launch | 49.5 GiB | 56.1 GiB | 47.8 GiB | 2.9 GiB |
+| Removal | 14.6 s | 8.2 s | 19.5 s | 11.9 s |
+
+On NTFS a Multibox worktree takes 13% more disk than a native one after its
+import: the carried `Library/` holds what the source accumulated, superseded
+artifacts and a 2.8 GiB search index among them, and a fresh import writes
+only what it needs. In repeated cycles without the launch, creating a Unity
+worktree on the Dev Drive took 48 to 85 seconds against 30 to 53 natively,
+because the clone carries 287,000 files to git's 104,000.
+
+The first `git status` took 0.07 to 0.13 seconds in every Multibox worktree and
+0.37 to 0.80 seconds in native ones.
+
+**Merging.** In throwaway clones of all three projects, the same change, a clean
+merge and a conflicting merge with its resolution went through a native
+worktree and a Multibox one, with fixed identities and dates. Every commit id
+matched. `git multibox finish` produced the same commit ids as the native
+sequence of merge, removal and branch deletion, in one command instead of
+three, and stopped on conflicts as `git merge` does.
+
+**Stability.** Five create-and-remove cycles per project and drive (three for
+Unity) all succeeded for both, with clean status and nothing left registered.
+Three worktrees created at once succeeded every time. Removing three at once
+first failed: each removal swept up the others' trash and they collided. After
+the fix, 41 of 42 concurrent removals reported success; the one that did not
+had still deleted everything, and the failure did not recur in 24 attempts.
+
 ## Still to measure
 
 - Native import time and reopening on macOS.
