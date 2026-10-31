@@ -1008,3 +1008,60 @@ fn carried_pnpm_state_names_the_new_worktree() {
     );
     assert!(wt.join("node_modules/left-pad/index.js").exists());
 }
+
+#[test]
+fn check_only_typescript_build_info_is_carried_even_in_copy_mode() {
+    let temp = TempDir::new().unwrap();
+    let repo = temp.path().join("main");
+    fs::create_dir(&repo).unwrap();
+    sh(&repo, &["init", "-q", "-b", "master"]);
+    sh(&repo, &["config", "user.email", "test@example.com"]);
+    sh(&repo, &["config", "user.name", "test"]);
+    sh(&repo, &["config", "core.autocrlf", "false"]);
+    write(&repo, ".gitignore", "*.tsbuildinfo\n");
+    write(&repo, "web/tsconfig.json", "{ \"include\": [\"src\"] }\n");
+    write(&repo, "web/src/a.ts", "export const a = 1;\n");
+    sh(&repo, &["add", "."]);
+    sh(&repo, &["commit", "-q", "-m", "init"]);
+
+    let info = |pending: &str| {
+        format!(
+            "{{\"fileNames\":[\"./src/a.ts\"],\"root\":[1],\"options\":{{}},\"affectedFilesPendingEmit\":{pending},\"version\":\"5.9.3\"}}"
+        )
+    };
+    write(&repo, "web/tsconfig.tsbuildinfo", &info("[[1,17]]"));
+    write(&repo, "web/emitted.tsbuildinfo", &info("[]"));
+
+    add(&repo, &copy_mode("../wt"), &Silent).unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+    assert_eq!(
+        fs::read_to_string(wt.join("web/tsconfig.tsbuildinfo")).unwrap(),
+        info("[[1,17]]")
+    );
+    assert!(!wt.join("web/emitted.tsbuildinfo").exists());
+}
+
+#[test]
+fn verified_build_info_inside_node_modules_survives_the_copy_mode_refusal() {
+    let (_temp, repo) = pnpm_repo();
+    // The layout create-vite generates for TypeScript projects.
+    write(
+        &repo,
+        "tsconfig.app.json",
+        "{ \"compilerOptions\": { \"tsBuildInfoFile\": \"./node_modules/.tmp/tsconfig.app.tsbuildinfo\", \"noEmit\": true } }\n",
+    );
+    sh(&repo, &["add", "tsconfig.app.json"]);
+    sh(&repo, &["commit", "-q", "-m", "typescript"]);
+    let info = "{\"fileNames\":[\"../../src/a.ts\"],\"root\":[1],\"options\":{},\"affectedFilesPendingEmit\":[[1,17]],\"version\":\"5.9.3\"}";
+    write(&repo, "node_modules/.tmp/tsconfig.app.tsbuildinfo", info);
+
+    add(&repo, &copy_mode("../wt"), &Silent).unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+    assert_eq!(
+        fs::read_to_string(wt.join("node_modules/.tmp/tsconfig.app.tsbuildinfo")).unwrap(),
+        info
+    );
+    assert!(!wt.join("node_modules/left-pad").exists());
+    assert!(!wt.join("node_modules/.modules.yaml").exists());
+    assert!(!wt.join("apps/site/node_modules").exists());
+}

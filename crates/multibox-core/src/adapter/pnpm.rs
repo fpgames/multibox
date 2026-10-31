@@ -26,6 +26,7 @@ impl Adapter for Pnpm {
                 root: prefix.trim_end_matches('/').to_owned(),
                 version: None,
                 local_packages: Vec::new(),
+                verified_files: Vec::new(),
             })
             .collect()
     }

@@ -12,10 +12,12 @@
 
 mod cargo;
 mod pnpm;
+mod typescript;
 mod unity;
 
 pub use cargo::Cargo;
 pub use pnpm::Pnpm;
+pub use typescript::TypeScript;
 pub use unity::Unity;
 
 use crate::Result;
@@ -32,6 +34,9 @@ pub struct Project {
     /// Packages the project compiles from its own sources. Their build output
     /// records where the project lives, so it is never carried.
     pub local_packages: Vec<String>,
+    /// Ignored files the adapter read during detection and found safe to
+    /// carry, relative to the worktree root.
+    pub verified_files: Vec<String>,
 }
 
 impl Project {
@@ -88,7 +93,7 @@ pub trait Adapter: Sync {
 }
 
 pub fn adapters() -> &'static [&'static dyn Adapter] {
-    &[&Unity, &Cargo, &Pnpm]
+    &[&Unity, &Cargo, &Pnpm, &TypeScript]
 }
 
 fn adapter_for(project: &Project) -> Option<&'static dyn Adapter> {
@@ -96,6 +101,7 @@ fn adapter_for(project: &Project) -> Option<&'static dyn Adapter> {
         "unity" => Some(&Unity),
         "cargo" => Some(&Cargo),
         "pnpm" => Some(&Pnpm),
+        "typescript" => Some(&TypeScript),
         _ => None,
     }
 }

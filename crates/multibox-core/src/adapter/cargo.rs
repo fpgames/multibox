@@ -44,6 +44,7 @@ impl Adapter for Cargo {
                     root: prefix.trim_end_matches('/').to_owned(),
                     version: None,
                     local_packages: local_packages(&lock),
+                    verified_files: Vec::new(),
                 })
             })
             .collect()
@@ -154,6 +155,7 @@ source = "git+https://example.com/forked#abc"
             root: root.to_owned(),
             version: None,
             local_packages: local_packages(LOCK),
+            verified_files: Vec::new(),
         }
     }
 

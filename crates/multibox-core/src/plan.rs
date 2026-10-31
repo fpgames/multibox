@@ -115,7 +115,8 @@ pub fn build_plan(
             if let Some(dir) = entry.strip_suffix('/') {
                 if rules.refuses(dir, true) {
                     refused.push(dir.to_owned());
-                } else if multibox_clone::TreeFilter::check(&rules, dir, true)
+                }
+                if multibox_clone::TreeFilter::check(&rules, dir, true)
                     != multibox_clone::Decision::Exclude
                 {
                     trees.push(dir.to_owned());

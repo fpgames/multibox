@@ -13,10 +13,13 @@ pub const INCLUDE_FILE: &str = ".worktreeinclude";
 /// Patterns use gitignore syntax and are evaluated in order: engine defaults,
 /// then engine exclusions, then the repository's `.worktreeinclude`. The last
 /// match wins, so a repository can override anything an adapter decided, with
-/// one exception: paths an adapter refuses outright are never carried.
+/// one exception: paths an adapter refuses outright are never carried, other
+/// than single files an adapter has verified.
 pub struct Rules {
     matcher: Gitignore,
     refused: Gitignore,
+    /// Verified files carried even inside a refused tree.
+    exempt: Vec<String>,
     literal_prefixes: Vec<String>,
     matches_anywhere: bool,
 }
@@ -40,11 +43,12 @@ fn glob_free_prefix(pattern: &str) -> &str {
 
 impl Rules {
     pub fn new(lines: &[String]) -> Result<Rules> {
-        Rules::with_refusals(lines, &[])
+        Rules::with_refusals(lines, &[], &[])
     }
 
-    /// Like [`Rules::new`], but nothing matching `refused` is ever carried.
-    pub fn with_refusals(lines: &[String], refused: &[String]) -> Result<Rules> {
+    /// Like [`Rules::new`], but nothing matching `refused` is ever carried,
+    /// except the files listed in `exempt`.
+    pub fn with_refusals(lines: &[String], refused: &[String], exempt: &[String]) -> Result<Rules> {
         let mut kept = Vec::new();
         let mut literal_prefixes = Vec::new();
         let mut matches_anywhere = false;
@@ -67,6 +71,7 @@ impl Rules {
         Ok(Rules {
             matcher: build(&kept)?,
             refused: build(refused)?,
+            exempt: exempt.to_vec(),
             literal_prefixes,
             matches_anywhere,
         })
@@ -110,7 +115,11 @@ impl Rules {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => return Err(err.into()),
         }
-        Rules::with_refusals(&lines, &refused)
+        let exempt: Vec<String> = projects
+            .iter()
+            .flat_map(|project| project.verified_files.iter().cloned())
+            .collect();
+        Rules::with_refusals(&lines, &refused, &exempt)
     }
 
     fn matched(&self, rel: &str, is_dir: bool) -> Match<()> {
@@ -125,8 +134,18 @@ impl Rules {
             .is_ignore()
     }
 
+    fn leads_to_exempt(&self, dir: &str) -> bool {
+        self.exempt.iter().any(|file| {
+            file.strip_prefix(dir)
+                .is_some_and(|rest| rest.starts_with('/'))
+        })
+    }
+
     pub fn includes(&self, rel: &str, is_dir: bool) -> bool {
-        !self.is_refused(rel, is_dir) && matches!(self.matched(rel, is_dir), Match::Ignore(()))
+        if self.is_refused(rel, is_dir) {
+            return !is_dir && self.exempt.iter().any(|file| file == rel);
+        }
+        matches!(self.matched(rel, is_dir), Match::Ignore(()))
     }
 
     /// Whether the patterns ask for `rel` but an adapter refuses it.
@@ -149,9 +168,16 @@ impl Rules {
 
 impl TreeFilter for Rules {
     fn check(&self, rel: &str, is_dir: bool) -> Decision {
-        // Checked first, so a refused tree is never walked.
+        // Checked first, so a refused tree is never walked, except along the
+        // path to a verified file.
         if self.is_refused(rel, is_dir) {
-            return Decision::Exclude;
+            return if is_dir && self.leads_to_exempt(rel) {
+                Decision::Descend
+            } else if self.includes(rel, is_dir) {
+                Decision::Include
+            } else {
+                Decision::Exclude
+            };
         }
         match self.matched(rel, is_dir) {
             Match::Ignore(()) => Decision::Include,
@@ -208,7 +234,7 @@ mod tests {
     fn refusals_beat_every_pattern_and_are_not_walked() {
         let lines = vec!["node_modules/".to_owned(), "/web/dist/".to_owned()];
         let refused = vec!["/**/node_modules/".to_owned()];
-        let rules = Rules::with_refusals(&lines, &refused).unwrap();
+        let rules = Rules::with_refusals(&lines, &refused, &[]).unwrap();
         assert_eq!(rules.check("web/node_modules", true), Decision::Exclude);
         assert!(!rules.includes("web/node_modules/left-pad/index.js", false));
         assert!(rules.refuses("web/node_modules", true));
@@ -219,7 +245,28 @@ mod tests {
     #[test]
     fn a_refusal_nobody_asked_for_is_not_reported() {
         let refused = vec!["/**/node_modules/".to_owned()];
-        let rules = Rules::with_refusals(&["/web/dist/".to_owned()], &refused).unwrap();
+        let rules = Rules::with_refusals(&["/web/dist/".to_owned()], &refused, &[]).unwrap();
         assert!(!rules.refuses("node_modules", true));
+    }
+
+    #[test]
+    fn a_verified_file_is_reached_inside_a_refused_tree_and_nothing_else() {
+        let file = "web/node_modules/.tmp/app.tsbuildinfo".to_owned();
+        let lines = vec!["node_modules/".to_owned(), format!("/{file}")];
+        let refused = vec!["/**/node_modules/".to_owned()];
+        let rules = Rules::with_refusals(&lines, &refused, std::slice::from_ref(&file)).unwrap();
+        assert_eq!(rules.check("web/node_modules", true), Decision::Descend);
+        assert_eq!(
+            rules.check("web/node_modules/.tmp", true),
+            Decision::Descend
+        );
+        assert_eq!(
+            rules.check("web/node_modules/react", true),
+            Decision::Exclude
+        );
+        assert_eq!(rules.check(&file, false), Decision::Include);
+        assert!(rules.includes(&file, false));
+        assert!(!rules.includes("web/node_modules/.tmp/other.json", false));
+        assert!(rules.refuses("web/node_modules", true));
     }
 }
