@@ -58,8 +58,14 @@ fn read_index(repo: &Repo) -> (Option<Index>, Option<String>) {
 }
 
 /// Lists every file a new worktree should get from `source`, without writing.
-/// With `carry` off, only tracked files are selected.
-pub fn build_plan(source: &Path, carry: bool, threads: Option<usize>) -> Result<Plan> {
+/// With `carry` off, only tracked files are selected. `frugal` skips caches
+/// that are only worth carrying when cloning is free.
+pub fn build_plan(
+    source: &Path,
+    carry: bool,
+    frugal: bool,
+    threads: Option<usize>,
+) -> Result<Plan> {
     let repo = Repo::discover(source)?;
     let (index, index_problem) = read_index(&repo);
 
@@ -79,7 +85,7 @@ pub fn build_plan(source: &Path, carry: bool, threads: Option<usize>) -> Result<
         }
     };
     let projects = adapter::detect(&repo.worktree, &tracked);
-    let rules = Rules::load(&repo.worktree, &projects)?;
+    let rules = Rules::load(&repo.worktree, &projects, frugal)?;
 
     let mut files = Vec::new();
     let mut links = Vec::new();

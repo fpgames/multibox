@@ -58,8 +58,9 @@ impl Rules {
     }
 
     /// Combines adapter defaults for `projects` with the `.worktreeinclude`
-    /// file at the root of `worktree`, if there is one.
-    pub fn load(worktree: &Path, projects: &[Project]) -> Result<Rules> {
+    /// file at the root of `worktree`, if there is one. With `frugal` set, as
+    /// in copy mode, caches that cost real disk space are left out too.
+    pub fn load(worktree: &Path, projects: &[Project], frugal: bool) -> Result<Rules> {
         let mut lines: Vec<String> = projects.iter().flat_map(adapter::includes).collect();
         lines.extend(
             projects
@@ -67,6 +68,14 @@ impl Rules {
                 .flat_map(adapter::excludes)
                 .map(|pattern| format!("!{pattern}")),
         );
+        if frugal {
+            lines.extend(
+                projects
+                    .iter()
+                    .flat_map(adapter::expensive)
+                    .map(|pattern| format!("!{pattern}")),
+            );
+        }
         match fs::read_to_string(worktree.join(INCLUDE_FILE)) {
             Ok(text) => lines.extend(text.lines().map(str::to_owned)),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}

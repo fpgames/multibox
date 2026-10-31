@@ -4,9 +4,9 @@
 //! every other subcommand is handed to git unchanged.
 
 use multibox_core::{
-    AddOptions, Level, MigrateOptions, Mode, Mount, Observer, Progress, RemoveOptions,
-    SetupOptions, adapter, add, diagnose, git, migrate, plan_setup, purge_trash, remove, run_setup,
-    spawn_detached, sweep_trash, switch,
+    AddOptions, InitOptions, InitOutcome, Level, MigrateOptions, Mode, Mount, Observer, Progress,
+    RemoveOptions, SetupOptions, adapter, add, diagnose, git, init, migrate, plan_setup,
+    purge_trash, remove, run_setup, spawn_detached, sweep_trash, switch,
 };
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -19,6 +19,7 @@ const USAGE: &str = "\
 usage: git multibox add [<options>] <path> [<commit-ish>]
        git multibox remove [-f] <worktree>
        git multibox <list|lock|move|prune|repair|unlock> ...
+       git multibox init [--to <path>] [--exclude <path>]... [--dry-run]
        git multibox doctor [--json]
        git multibox env [--json]
        git multibox setup [--vhdx <file>] [--size <GiB>] [--letter <X> | --folder <dir>] [--dry-run]
@@ -428,6 +429,64 @@ fn run_setup_command(args: Vec<String>) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
+fn run_init(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
+    let mut options = InitOptions::default();
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--to" => options.destination = Some(cwd.join(take_value(&mut args, "--to")?)),
+            "--exclude" => options.exclude.push(take_value(&mut args, "--exclude")?),
+            "--dry-run" => options.dry_run = true,
+            other => return Err(format!("unknown option {other}")),
+        }
+    }
+    let outcome = init(cwd, &options, &Terminal::default()).map_err(|err| err.to_string())?;
+    match outcome {
+        InitOutcome::Ready { filesystem } => {
+            println!("Ready: {filesystem} has reflinks, so new worktrees share data.");
+        }
+        InitOutcome::CopyModeOnly { filesystem } => {
+            println!("{filesystem} has no reflinks; worktrees work, as full copies.");
+        }
+        InitOutcome::Planned {
+            destination,
+            creates_area,
+            files,
+            bytes,
+        } => {
+            if creates_area {
+                println!("Would create a Dev Drive.");
+            }
+            println!(
+                "Would copy {files} files ({:.1} GiB) to {}, then redirect this project there.",
+                gib(bytes),
+                destination.display()
+            );
+        }
+        InitOutcome::WaitingForEditor {
+            destination,
+            reason,
+        } => {
+            println!(
+                "Copied to {}, but {reason}.\nSave your work, close it, and run `git multibox init` again to finish. Changes made until then are brought across.",
+                destination.display()
+            );
+        }
+        InitOutcome::Switched {
+            destination,
+            kept_at,
+            updated,
+        } => {
+            println!(
+                "Done: the project now lives in {} and the old path still works ({updated} late changes brought across).\nThe original is kept at {}; delete it yourself once you are happy.",
+                destination.display(),
+                kept_at.display()
+            );
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 fn run_migrate(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
     let mut destination = None;
     let mut exclude = Vec::new();
@@ -444,7 +503,7 @@ fn run_migrate(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
     }
     let destination = cwd.join(destination.ok_or("migrate needs a <destination>")?);
     if do_switch {
-        let outcome = switch(cwd, &destination).map_err(|err| err.to_string())?;
+        let outcome = switch(cwd, &destination, &exclude).map_err(|err| err.to_string())?;
         println!(
             "Switched. The original is kept at {}; delete it yourself once you are happy.",
             outcome.kept_at.display()
@@ -487,6 +546,21 @@ fn passthrough(cwd: &Path, subcommand: &str, args: Vec<String>) -> Result<ExitCo
     Ok(ExitCode::from(code.clamp(0, 255) as u8))
 }
 
+/// Resolves links in the working directory. After `init` the old project path is
+/// a link into the Dev Drive, and `../feature` has to land next to the real
+/// project: reflinks only work within one volume.
+fn real_directory(cwd: PathBuf) -> PathBuf {
+    let Ok(real) = std::fs::canonicalize(&cwd) else {
+        return cwd;
+    };
+    match real.to_str().and_then(|text| text.strip_prefix(r"\\?\")) {
+        // git cannot run from a verbatim path. UNC shares keep their original form.
+        Some(plain) if !plain.starts_with("UNC") => PathBuf::from(plain),
+        Some(_) => cwd,
+        None => real,
+    }
+}
+
 fn run() -> Result<ExitCode, String> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
@@ -494,13 +568,14 @@ fn run() -> Result<ExitCode, String> {
         return Ok(ExitCode::from(129));
     }
     let subcommand = args.remove(0);
-    let cwd = std::env::current_dir().map_err(|err| err.to_string())?;
+    let cwd = real_directory(std::env::current_dir().map_err(|err| err.to_string())?);
     match subcommand.as_str() {
         "add" => run_add(&cwd, args),
         "remove" => run_remove(&cwd, args),
         "doctor" => run_doctor(&cwd, &args),
         "env" => run_env(&cwd, &args),
         "setup" => run_setup_command(args),
+        "init" => run_init(&cwd, args),
         "migrate" => run_migrate(&cwd, args),
         "__purge" => {
             let trash = args.first().ok_or("__purge needs a path")?;

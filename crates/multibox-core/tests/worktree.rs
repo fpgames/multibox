@@ -589,7 +589,7 @@ fn switch_keeps_the_original_and_redirects_the_old_path() {
     )
     .unwrap();
 
-    let outcome = multibox_core::switch(&repo, &destination).unwrap();
+    let outcome = multibox_core::switch(&repo, &destination, &[]).unwrap();
 
     assert!(outcome.kept_at.join("README.md").exists(), "original kept");
     assert!(repo.join("README.md").exists(), "old path still resolves");
@@ -612,7 +612,7 @@ fn switch_keeps_the_original_and_redirects_the_old_path() {
 }
 
 #[test]
-fn switch_refuses_a_stale_copy() {
+fn switch_brings_the_copy_up_to_date() {
     let (_temp, repo) = unity_repo();
     let destination = repo.parent().unwrap().join("moved");
     multibox_core::migrate(
@@ -626,10 +626,95 @@ fn switch_refuses_a_stale_copy() {
         &Silent,
     )
     .unwrap();
-    write(&repo, "later.txt", "new work\n");
-    sh(&repo, &["add", "later.txt"]);
-    sh(&repo, &["commit", "-q", "-m", "later"]);
+    let head = {
+        write(&repo, "committed-later.txt", "new commit\n");
+        sh(&repo, &["add", "committed-later.txt"]);
+        sh(&repo, &["commit", "-q", "-m", "later"]);
+        sh(&repo, &["rev-parse", "HEAD"])
+    };
+    write(&repo, "client/Assets/a.txt", "uncommitted work\n");
+    fs::remove_file(repo.join("README.md")).unwrap();
 
-    assert!(multibox_core::switch(&repo, &destination).is_err());
-    assert!(repo.join("later.txt").exists());
+    let outcome = multibox_core::switch(&repo, &destination, &[]).unwrap();
+
+    assert!(outcome.updated > 0);
+    assert_eq!(sh(&destination, &["rev-parse", "HEAD"]), head);
+    assert_eq!(
+        fs::read_to_string(destination.join("client/Assets/a.txt")).unwrap(),
+        "uncommitted work\n"
+    );
+    assert!(!destination.join("README.md").exists());
+    assert_eq!(
+        status(&destination).trim(),
+        "D README.md\n M client/Assets/a.txt"
+    );
+}
+
+#[test]
+fn init_copies_while_the_editor_is_open_and_finishes_once_it_closes() {
+    let (_temp, repo) = unity_repo();
+    let destination = repo.parent().unwrap().join("area").join("game");
+    fs::remove_file(repo.join("client/Library/EditorInstance.json")).unwrap();
+    write(&repo, "client/Temp/UnityLockfile", "");
+    let options = multibox_core::InitOptions {
+        destination: Some(destination.clone()),
+        ..Default::default()
+    };
+
+    match multibox_core::init(&repo, &options, &Silent).unwrap() {
+        multibox_core::InitOutcome::WaitingForEditor { reason, .. } => {
+            assert!(reason.contains("unity editor"));
+        }
+        other => panic!("expected to wait for the editor, got {other:?}"),
+    }
+    assert!(repo.join("README.md").is_file(), "source must be untouched");
+    assert!(destination.join("client/Library/ArtifactDB").exists());
+
+    write(&repo, "client/Assets/a.txt", "edited during the copy\n");
+    fs::remove_file(repo.join("client/Temp/UnityLockfile")).unwrap();
+
+    match multibox_core::init(&repo, &options, &Silent).unwrap() {
+        multibox_core::InitOutcome::Switched {
+            kept_at, updated, ..
+        } => {
+            assert!(updated >= 1);
+            assert!(kept_at.join("README.md").exists(), "original kept");
+        }
+        other => panic!("expected the switch, got {other:?}"),
+    }
+    assert_eq!(
+        fs::read_to_string(repo.join("client/Assets/a.txt")).unwrap(),
+        "edited during the copy\n"
+    );
+    assert_eq!(status(&repo).trim(), "M client/Assets/a.txt");
+}
+
+#[test]
+fn copy_mode_leaves_expensive_caches_behind() {
+    let (_temp, repo) = unity_repo();
+    write(&repo, "client/Library/BuildCache/huge.bin", "build cache\n");
+    let mut request = options("../wt", &["--detach"]);
+    request.mode = Mode::Copy;
+    add(&repo, &request, &Silent).unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+    assert!(wt.join("client/Library/ArtifactDB").exists());
+    assert!(!wt.join("client/Library/BuildCache").exists());
+}
+
+#[test]
+fn worktreeinclude_can_bring_expensive_caches_back() {
+    let (_temp, repo) = unity_repo();
+    write(&repo, "client/Library/BuildCache/huge.bin", "build cache\n");
+    write(&repo, ".worktreeinclude", "/client/Library/BuildCache/\n");
+    sh(&repo, &["add", ".worktreeinclude"]);
+    sh(&repo, &["commit", "-q", "-m", "rules"]);
+    let mut request = options("../wt", &["--detach"]);
+    request.mode = Mode::Copy;
+    add(&repo, &request, &Silent).unwrap();
+    assert!(
+        repo.parent()
+            .unwrap()
+            .join("wt/client/Library/BuildCache/huge.bin")
+            .exists()
+    );
 }

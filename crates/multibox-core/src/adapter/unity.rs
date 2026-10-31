@@ -78,6 +78,11 @@ impl Adapter for Unity {
         .collect()
     }
 
+    fn expensive(&self, project: &Project) -> Vec<String> {
+        // The build pipeline's cache: only player and bundle builds read it.
+        vec![format!("/{}", project.path("Library/BuildCache/"))]
+    }
+
     fn volatile_files(&self, project: &Project) -> Vec<String> {
         ["Library/ArtifactDB", "Library/SourceAssetDB"]
             .iter()

@@ -1,18 +1,27 @@
-//! `git multibox migrate`: moves a project onto a reflink-capable volume.
+//! `git multibox init`: gets a project onto a volume with reflinks.
 //!
-//! Migration is two deliberate steps. `migrate` makes an independent copy and
-//! leaves the source untouched, so the copy can be tried for as long as needed.
-//! `migrate --switch` then redirects the old path to the new location. Neither
-//! step deletes anything: `--switch` keeps the original under a new name.
+//! Reflinks only work within one volume, so on Windows the project has to live
+//! on the Dev Drive. `init` does whatever is left to do and can be run again at
+//! any point:
+//!
+//! 1. Create the Dev Drive if the machine has none.
+//! 2. Copy the project across. The source is only read, so the editor can stay
+//!    open and work can continue during the copy.
+//! 3. Once the editor is closed, bring the copy up to date with whatever changed
+//!    meanwhile, then redirect the old path to the new location.
+//!
+//! Nothing is deleted. The original keeps its contents under a new name, for the
+//! user to remove once they are satisfied.
 
 use crate::adapter;
 use crate::add::Observer;
 use crate::git::{self, Repo};
 use crate::index::Index;
+use crate::setup::{Mount, SetupOptions, plan_setup, run_setup};
 use crate::{Error, Result};
 use multibox_clone::{
-    Decision, Options, Progress, Report, ScanRequest, Strategy, TreeFilter, execute, free_space,
-    scan,
+    Decision, Options, Progress, Report, ScanRequest, TreeFilter, execute, free_space, probe, scan,
+    sync, volumes,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -40,6 +49,18 @@ pub struct MigrateOutcome {
 /// believe it owned those worktrees and could prune them.
 struct CopyFilter {
     skipped: Vec<String>,
+}
+
+impl CopyFilter {
+    fn new(repo: &Repo, exclude: &[String]) -> CopyFilter {
+        let mut skipped = vec![".git/worktrees".to_owned()];
+        skipped.extend(exclude.iter().map(|path| path.trim_matches('/').to_owned()));
+        for project in projects(repo) {
+            skipped.push(project.path("Temp"));
+            skipped.push(project.path("Logs"));
+        }
+        CopyFilter { skipped }
+    }
 }
 
 impl TreeFilter for CopyFilter {
@@ -74,21 +95,20 @@ fn projects(repo: &Repo) -> Vec<adapter::Project> {
     adapter::detect(&repo.worktree, &tracked)
 }
 
-fn refuse_if_editor_open(repo: &Repo, action: &str) -> Result<()> {
-    for project in projects(repo) {
-        if adapter::running_editor(&repo.worktree, &project).is_some() {
-            return Err(Error::new(format!(
-                "close the {} editor before {action}: it is writing to {}",
+fn open_editor(repo: &Repo) -> Option<String> {
+    projects(repo).iter().find_map(|project| {
+        adapter::running_editor(&repo.worktree, project).map(|_| {
+            format!(
+                "the {} editor has {} open",
                 project.engine,
                 repo.worktree.join(&project.root).display()
-            )));
-        }
-    }
-    Ok(())
+            )
+        })
+    })
 }
 
 /// Copies the main worktree, history included, to `destination`. The source is
-/// only read.
+/// only read, so an open editor is fine: [`switch`] picks up later changes.
 pub fn migrate(
     cwd: &Path,
     options: &MigrateOptions,
@@ -102,18 +122,7 @@ pub fn migrate(
         )));
     }
 
-    let mut skipped = vec![".git/worktrees".to_owned()];
-    skipped.extend(
-        options
-            .exclude
-            .iter()
-            .map(|path| path.trim_matches('/').to_owned()),
-    );
-    for project in projects(&repo) {
-        skipped.push(project.path("Temp"));
-        skipped.push(project.path("Logs"));
-    }
-    let filter = CopyFilter { skipped };
+    let filter = CopyFilter::new(&repo, &options.exclude);
     let manifest = scan(
         &repo.worktree,
         &ScanRequest {
@@ -151,9 +160,9 @@ pub fn migrate(
         &repo.worktree,
         &options.destination,
         &Options {
-            strategy: Strategy::Copy,
             threads: options.threads,
             progress: Some(&progress),
+            ..Options::default()
         },
     );
     observer.clone_finished();
@@ -179,14 +188,14 @@ pub fn migrate(
 pub struct SwitchOutcome {
     /// Where the original project now lives.
     pub kept_at: PathBuf,
+    /// Files that changed after the copy was made and were brought across.
+    pub updated: u64,
 }
 
-/// Points the old project path at a migrated copy, so Unity Hub, IDE history and
-/// scripts keep working. The original is renamed, not deleted.
-///
-/// Linked worktrees are not moved. Their registrations are copied across and
-/// each one is repointed at the migrated repository.
-pub fn switch(cwd: &Path, destination: &Path) -> Result<SwitchOutcome> {
+/// Brings a migrated copy up to date, then points the old project path at it, so
+/// Unity Hub, IDE history and scripts keep working. The original is renamed, not
+/// deleted. Linked worktrees stay where they are and are repointed.
+pub fn switch(cwd: &Path, destination: &Path, exclude: &[String]) -> Result<SwitchOutcome> {
     let repo = main_worktree(cwd)?;
     let destination = fs::canonicalize(destination)?;
     if !destination.join(".git").is_dir() {
@@ -195,28 +204,8 @@ pub fn switch(cwd: &Path, destination: &Path) -> Result<SwitchOutcome> {
             destination.display()
         )));
     }
-    let source_head = git::output(&repo.worktree, &["rev-parse", "HEAD"])?;
-    let target_head = git::output(&destination, &["rev-parse", "HEAD"])?;
-    if source_head != target_head {
-        return Err(Error::new(format!(
-            "{} and {} are on different commits; migrate again first",
-            repo.worktree.display(),
-            destination.display()
-        )));
-    }
-    refuse_if_editor_open(&repo, "switching")?;
-
-    let linked: Vec<PathBuf> = git::worktrees(&repo.worktree)?
-        .into_iter()
-        .skip(1)
-        .map(|info| info.path)
-        .collect();
-    let source_worktrees = repo.common_dir.join("worktrees");
-    if source_worktrees.is_dir() {
-        copy_registrations(
-            &source_worktrees,
-            &destination.join(".git").join("worktrees"),
-        )?;
+    if let Some(reason) = open_editor(&repo) {
+        return Err(Error::new(format!("close it first: {reason}")));
     }
 
     let name = repo
@@ -231,6 +220,31 @@ pub fn switch(cwd: &Path, destination: &Path) -> Result<SwitchOutcome> {
     if kept_at.exists() {
         return Err(Error::new(format!("{} already exists", kept_at.display())));
     }
+
+    let filter = CopyFilter::new(&repo, exclude);
+    let synced = sync(&repo.worktree, &destination, &filter, None)?;
+    if let Some(failure) = synced.failures.first() {
+        return Err(Error::new(format!(
+            "{} file(s) could not be updated, first: {}: {}; nothing was switched",
+            synced.failures.len(),
+            failure.path,
+            failure.error
+        )));
+    }
+
+    let linked: Vec<PathBuf> = git::worktrees(&repo.worktree)?
+        .into_iter()
+        .skip(1)
+        .map(|info| info.path)
+        .collect();
+    let source_worktrees = repo.common_dir.join("worktrees");
+    if source_worktrees.is_dir() {
+        copy_registrations(
+            &source_worktrees,
+            &destination.join(".git").join("worktrees"),
+        )?;
+    }
+
     fs::rename(&repo.worktree, &kept_at)?;
     if let Err(err) = make_directory_link(&repo.worktree, &destination) {
         fs::rename(&kept_at, &repo.worktree)?;
@@ -240,7 +254,10 @@ pub fn switch(cwd: &Path, destination: &Path) -> Result<SwitchOutcome> {
     let mut args = vec!["worktree".to_owned(), "repair".to_owned()];
     args.extend(linked.iter().map(|path| path.display().to_string()));
     git::quiet(&destination, &args)?;
-    Ok(SwitchOutcome { kept_at })
+    Ok(SwitchOutcome {
+        kept_at,
+        updated: synced.updated + synced.removed,
+    })
 }
 
 fn copy_registrations(from: &Path, to: &Path) -> Result<()> {
@@ -294,4 +311,140 @@ fn make_directory_link(link: &Path, target: &Path) -> Result<()> {
 #[cfg(unix)]
 fn make_directory_link(link: &Path, target: &Path) -> Result<()> {
     Ok(std::os::unix::fs::symlink(target, link)?)
+}
+
+#[derive(Default)]
+pub struct InitOptions {
+    /// Where the project should live; defaults to a folder on the Dev Drive.
+    pub destination: Option<PathBuf>,
+    pub exclude: Vec<String>,
+    pub setup: SetupOptions,
+    pub dry_run: bool,
+}
+
+#[derive(Debug)]
+pub enum InitOutcome {
+    /// The project already sits on a volume with reflinks.
+    Ready { filesystem: String },
+    /// This filesystem has no reflinks and the platform offers no way to add
+    /// them. Worktrees keep working, as full copies.
+    CopyModeOnly { filesystem: String },
+    /// What a real run would do.
+    Planned {
+        destination: PathBuf,
+        creates_area: bool,
+        files: u64,
+        bytes: u64,
+    },
+    /// The copy is in place, but an editor is using the original. Running init
+    /// again after closing it finishes the job.
+    WaitingForEditor {
+        destination: PathBuf,
+        reason: String,
+    },
+    Switched {
+        destination: PathBuf,
+        kept_at: PathBuf,
+        updated: u64,
+    },
+}
+
+fn existing_area() -> Option<PathBuf> {
+    volumes()
+        .into_iter()
+        .filter(|volume| volume.fixed && volume.reflink)
+        .max_by_key(|volume| volume.free)
+        .map(|volume| PathBuf::from(volume.root))
+}
+
+/// The root of a reflink-capable area, created if the machine has none.
+fn ensure_area(options: &InitOptions, observer: &dyn Observer) -> Result<PathBuf> {
+    if let Some(root) = existing_area() {
+        return Ok(root);
+    }
+    let plan = plan_setup(&options.setup)?;
+    observer.note(&format!(
+        "creating a Dev Drive in {}, which grows on demand; no existing volume is touched",
+        plan.vhdx.display()
+    ));
+    run_setup(&plan)?;
+    Ok(match plan.mount {
+        Mount::Letter(letter) => PathBuf::from(format!("{letter}:\\")),
+        Mount::Folder(path) => path,
+    })
+}
+
+/// Does whatever is left to give this project fast, space-sharing worktrees.
+/// Safe to run repeatedly: each run picks up where the last one stopped.
+pub fn init(cwd: &Path, options: &InitOptions, observer: &dyn Observer) -> Result<InitOutcome> {
+    let repo = main_worktree(cwd)?;
+    let capability = probe(&repo.worktree, &repo.worktree)?;
+    if capability.reflink {
+        return Ok(InitOutcome::Ready {
+            filesystem: capability.filesystem,
+        });
+    }
+    if options.destination.is_none() && !cfg!(windows) {
+        return Ok(InitOutcome::CopyModeOnly {
+            filesystem: capability.filesystem,
+        });
+    }
+
+    let name = repo
+        .worktree
+        .file_name()
+        .ok_or_else(|| Error::new("cannot migrate a filesystem root"))?
+        .to_owned();
+    let copy = |destination: &Path, dry_run: bool| {
+        migrate(
+            cwd,
+            &MigrateOptions {
+                destination: destination.to_path_buf(),
+                exclude: options.exclude.clone(),
+                dry_run,
+                threads: None,
+            },
+            observer,
+        )
+    };
+
+    if options.dry_run {
+        let root = existing_area();
+        let creates_area = options.destination.is_none() && root.is_none();
+        let destination = match &options.destination {
+            Some(path) => path.clone(),
+            None if creates_area => plan_setup(&options.setup).map(|plan| match plan.mount {
+                Mount::Letter(letter) => PathBuf::from(format!("{letter}:\\")).join(&name),
+                Mount::Folder(path) => path.join(&name),
+            })?,
+            None => root.unwrap_or_default().join(&name),
+        };
+        let planned = copy(&destination, true)?;
+        return Ok(InitOutcome::Planned {
+            destination,
+            creates_area,
+            files: planned.files,
+            bytes: planned.bytes,
+        });
+    }
+
+    let destination = match &options.destination {
+        Some(path) => path.clone(),
+        None => ensure_area(options, observer)?.join(&name),
+    };
+    if !destination.exists() {
+        copy(&destination, false)?;
+    }
+    if let Some(reason) = open_editor(&repo) {
+        return Ok(InitOutcome::WaitingForEditor {
+            destination,
+            reason,
+        });
+    }
+    let switched = switch(cwd, &destination, &options.exclude)?;
+    Ok(InitOutcome::Switched {
+        destination,
+        kept_at: switched.kept_at,
+        updated: switched.updated,
+    })
 }

@@ -18,7 +18,9 @@ mod setup;
 
 pub use add::{AddOptions, AddOutcome, Mode, Observer, add};
 pub use doctor::{Check, Diagnosis, Level, diagnose};
-pub use migrate::{MigrateOptions, MigrateOutcome, SwitchOutcome, migrate, switch};
+pub use migrate::{
+    InitOptions, InitOutcome, MigrateOptions, MigrateOutcome, SwitchOutcome, init, migrate, switch,
+};
 pub use multibox_clone::{Capability, Progress, Report, Strategy, Volume};
 pub use plan::{Plan, PlanSummary, build_plan};
 pub use remove::{RemoveOptions, RemoveOutcome, purge_trash, remove, spawn_detached, sweep_trash};

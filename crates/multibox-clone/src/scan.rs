@@ -4,6 +4,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 use std::sync::{Condvar, Mutex};
+use std::time::SystemTime;
 
 /// What to do with a path found while walking a tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +44,8 @@ pub struct ScanRequest<'a> {
 pub struct FileEntry {
     pub rel: String,
     pub size: u64,
+    /// Known for files found on disk; absent for ones the caller listed.
+    pub modified: Option<SystemTime>,
 }
 
 #[derive(Clone, Debug)]
@@ -170,6 +173,7 @@ fn walk_dir(
             found.files.push(FileEntry {
                 rel: child,
                 size: meta.len(),
+                modified: meta.modified().ok(),
             });
         }
     }
@@ -257,6 +261,7 @@ pub fn scan(src_root: &Path, req: &ScanRequest<'_>) -> io::Result<Manifest> {
         .extend(req.files.iter().map(|(rel, size)| FileEntry {
             rel: rel.clone(),
             size: *size,
+            modified: None,
         }));
     for rel in &req.links {
         match fs::symlink_metadata(join(&root, rel)) {
@@ -267,6 +272,7 @@ pub fn scan(src_root: &Path, req: &ScanRequest<'_>) -> io::Result<Manifest> {
             Ok(meta) => manifest.files.push(FileEntry {
                 rel: rel.clone(),
                 size: meta.len(),
+                modified: meta.modified().ok(),
             }),
             Err(_) => {}
         }

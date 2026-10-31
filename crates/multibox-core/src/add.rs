@@ -278,10 +278,11 @@ pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<
         .from
         .as_ref()
         .map_or_else(|| cwd.to_path_buf(), |from| cwd.join(from));
-    let mut plan = build_plan(&source, options.carry, options.threads)?;
     let target = cwd.join(&options.path);
-    let capability = probe(&plan.repo.worktree, &target)?;
+    let capability = probe(&Repo::discover(&source)?.worktree, &target)?;
     let strategy = resolve_mode(options.mode);
+    let frugal = !capability.reflink || strategy == Strategy::Copy;
+    let mut plan = build_plan(&source, options.carry, frugal, options.threads)?;
     if strategy == Strategy::Reflink && !capability.reflink {
         return Err(Error::new(format!(
             "reflinks are unavailable here ({}, same volume: {}); run `git multibox doctor`",

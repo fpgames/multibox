@@ -16,6 +16,7 @@
 mod exec;
 mod purge;
 mod scan;
+mod sync;
 
 #[cfg_attr(windows, path = "sys/windows.rs")]
 #[cfg_attr(unix, path = "sys/unix.rs")]
@@ -24,6 +25,7 @@ mod sys;
 pub use exec::{Failure, Options, Progress, Report, Strategy, execute};
 pub use purge::{PurgeReport, purge};
 pub use scan::{Decision, DirEntry, FileEntry, LinkEntry, Manifest, ScanRequest, TreeFilter, scan};
+pub use sync::{SyncReport, sync};
 pub use sys::{Capability, free_space, probe, volumes};
 
 use std::path::{Path, PathBuf};

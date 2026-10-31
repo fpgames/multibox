@@ -45,6 +45,11 @@ pub trait Adapter: Sync {
     fn includes(&self, project: &Project) -> Vec<String>;
     /// Patterns that override [`Adapter::includes`].
     fn excludes(&self, project: &Project) -> Vec<String>;
+    /// Large caches that are worth carrying only when cloning them is free.
+    /// Left behind in copy mode, where each one costs real disk space.
+    fn expensive(&self, _project: &Project) -> Vec<String> {
+        Vec::new()
+    }
     /// Databases an editor writes to while running. They are cloned before
     /// everything else and retried if they change, so keep this list short.
     fn volatile_files(&self, project: &Project) -> Vec<String>;
@@ -80,6 +85,10 @@ pub fn includes(project: &Project) -> Vec<String> {
 
 pub fn excludes(project: &Project) -> Vec<String> {
     adapter_for(project).map_or_else(Vec::new, |adapter| adapter.excludes(project))
+}
+
+pub fn expensive(project: &Project) -> Vec<String> {
+    adapter_for(project).map_or_else(Vec::new, |adapter| adapter.expensive(project))
 }
 
 pub fn volatile_files(project: &Project) -> Vec<String> {
