@@ -106,7 +106,12 @@ impl Adapter for Unity {
     /// back to whichever editor is open, so a worktree without a running editor
     /// would drive the main one. This variable makes the CLI fail instead.
     fn environment(&self, worktree: &Path, project: &Project) -> Vec<(String, String)> {
-        let path = worktree.join(&project.root).display().to_string();
+        let path = if project.root.is_empty() {
+            worktree.to_path_buf()
+        } else {
+            worktree.join(&project.root)
+        };
+        let path = path.display().to_string();
         let path = if cfg!(windows) {
             path.replace('/', "\\")
         } else {

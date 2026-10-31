@@ -95,9 +95,6 @@ pub fn migrate(
     observer: &dyn Observer,
 ) -> Result<MigrateOutcome> {
     let repo = main_worktree(cwd)?;
-    if !options.dry_run {
-        refuse_if_editor_open(&repo, "migrating")?;
-    }
     if options.destination.exists() {
         return Err(Error::new(format!(
             "{} already exists",

@@ -422,7 +422,7 @@ fn run_setup_command(args: Vec<String>) -> Result<ExitCode, String> {
     if dry_run {
         return Ok(ExitCode::SUCCESS);
     }
-    println!("Windows will ask for administrator approval.");
+    println!("Windows may ask for administrator approval.");
     run_setup(&plan).map_err(|err| err.to_string())?;
     println!("Dev Drive ready at {mount}. Move a project there with `git multibox migrate`.");
     Ok(ExitCode::SUCCESS)
