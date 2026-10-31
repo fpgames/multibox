@@ -18,6 +18,9 @@ pub struct Plan {
     pub projects: Vec<Project>,
     pub manifest: Manifest,
     pub summary: PlanSummary,
+    /// Ignored directories the rules asked for that an adapter refused to
+    /// carry in this mode.
+    pub refused: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -106,10 +109,13 @@ pub fn build_plan(
     let tracked_bytes: u64 = files.iter().map(|(_, size)| size).sum();
 
     let mut trees = Vec::new();
+    let mut refused = Vec::new();
     if carry {
         for entry in ignored_entries(&repo.worktree)? {
             if let Some(dir) = entry.strip_suffix('/') {
-                if multibox_clone::TreeFilter::check(&rules, dir, true)
+                if rules.refuses(dir, true) {
+                    refused.push(dir.to_owned());
+                } else if multibox_clone::TreeFilter::check(&rules, dir, true)
                     != multibox_clone::Decision::Exclude
                 {
                     trees.push(dir.to_owned());
@@ -120,6 +126,9 @@ pub fn build_plan(
             }
         }
     }
+
+    // Outermost first, so a report names the one a user would recognise.
+    refused.sort_by_key(|dir| (dir.matches('/').count(), dir.clone()));
 
     let manifest = scan(
         &repo.worktree,
@@ -147,5 +156,6 @@ pub fn build_plan(
         projects,
         manifest,
         summary,
+        refused,
     })
 }

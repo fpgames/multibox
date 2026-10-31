@@ -2,11 +2,20 @@
 //!
 //! An adapter only describes a project; it does no file work of its own. That
 //! keeps the clone pipeline identical for every engine, so adding one means
-//! answering four questions: where are the projects, which ignored paths are
-//! worth carrying, which must stay behind, and is an editor using this project?
+//! answering a few questions: where are the projects, which ignored paths are
+//! worth carrying, which must stay behind, which carried files record where the
+//! project lives, and is an editor using this project?
+//!
+//! Every answer has to leave the new worktree at least as good as a native one.
+//! A cache is carried only if it is cheaper to clone than to rebuild, and only
+//! in a form that cannot reach back into the source.
 
+mod cargo;
+mod pnpm;
 mod unity;
 
+pub use cargo::Cargo;
+pub use pnpm::Pnpm;
 pub use unity::Unity;
 
 use crate::Result;
@@ -20,6 +29,9 @@ pub struct Project {
     /// Project root relative to the worktree root; empty for the root itself.
     pub root: String,
     pub version: Option<String>,
+    /// Packages the project compiles from its own sources. Their build output
+    /// records where the project lives, so it is never carried.
+    pub local_packages: Vec<String>,
 }
 
 impl Project {
@@ -50,10 +62,25 @@ pub trait Adapter: Sync {
     fn expensive(&self, _project: &Project) -> Vec<String> {
         Vec::new()
     }
+    /// Caches whose own tool restores them faster than a copy could carry them.
+    /// Unlike [`Adapter::expensive`] ones, they stay behind in copy mode even
+    /// when `.worktreeinclude` asks for them.
+    fn reflink_only(&self, _project: &Project) -> Vec<String> {
+        Vec::new()
+    }
+    /// Carried files that record the project's absolute path. The source path
+    /// in them is rewritten to the new worktree after cloning.
+    fn relocated(&self, _project: &Project) -> Vec<String> {
+        Vec::new()
+    }
     /// Databases an editor writes to while running. They are cloned before
     /// everything else and retried if they change, so keep this list short.
-    fn volatile_files(&self, project: &Project) -> Vec<String>;
-    fn running_editor(&self, worktree: &Path, project: &Project) -> Option<Editor>;
+    fn volatile_files(&self, _project: &Project) -> Vec<String> {
+        Vec::new()
+    }
+    fn running_editor(&self, _worktree: &Path, _project: &Project) -> Option<Editor> {
+        None
+    }
     /// Variables that keep engine tooling inside this worktree.
     fn environment(&self, _worktree: &Path, _project: &Project) -> Vec<(String, String)> {
         Vec::new()
@@ -61,12 +88,14 @@ pub trait Adapter: Sync {
 }
 
 pub fn adapters() -> &'static [&'static dyn Adapter] {
-    &[&Unity]
+    &[&Unity, &Cargo, &Pnpm]
 }
 
 fn adapter_for(project: &Project) -> Option<&'static dyn Adapter> {
     match project.engine {
         "unity" => Some(&Unity),
+        "cargo" => Some(&Cargo),
+        "pnpm" => Some(&Pnpm),
         _ => None,
     }
 }
@@ -89,6 +118,14 @@ pub fn excludes(project: &Project) -> Vec<String> {
 
 pub fn expensive(project: &Project) -> Vec<String> {
     adapter_for(project).map_or_else(Vec::new, |adapter| adapter.expensive(project))
+}
+
+pub fn reflink_only(project: &Project) -> Vec<String> {
+    adapter_for(project).map_or_else(Vec::new, |adapter| adapter.reflink_only(project))
+}
+
+pub fn relocated(project: &Project) -> Vec<String> {
+    adapter_for(project).map_or_else(Vec::new, |adapter| adapter.relocated(project))
 }
 
 pub fn volatile_files(project: &Project) -> Vec<String> {

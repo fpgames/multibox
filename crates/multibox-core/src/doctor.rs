@@ -152,16 +152,15 @@ fn check_repository(report: &mut Diagnosis, cwd: &Path) {
         .map(|entry| entry.path.as_str())
         .collect();
     for project in adapter::detect(&repo.worktree, &tracked) {
-        let name = format!(
-            "{} {} at {}",
-            project.engine,
-            project.version.as_deref().unwrap_or("(unknown version)"),
-            if project.root.is_empty() {
-                "."
-            } else {
-                &project.root
-            }
-        );
+        let root = if project.root.is_empty() {
+            "."
+        } else {
+            &project.root
+        };
+        let name = match &project.version {
+            Some(version) => format!("{} {version} at {root}", project.engine),
+            None => format!("{} at {root}", project.engine),
+        };
         report.push("project", Level::Ok, name);
         if let Some(editor) = adapter::running_editor(&repo.worktree, &project) {
             let pid = editor

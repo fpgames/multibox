@@ -2,11 +2,13 @@ use crate::adapter;
 use crate::git::{self, Repo};
 use crate::index::{Index, Stat};
 use crate::plan::{Plan, PlanSummary, build_plan};
+use crate::rules::Rules;
 use crate::{Error, Result};
 use multibox_clone::{
     Capability, DirEntry, Manifest, Options, Progress, Report, Strategy, execute, free_space, probe,
 };
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -301,6 +303,116 @@ fn finish_checkout(plan: &mut Plan, new: &Repo) -> Result<()> {
     git::quiet(&new.worktree, &["reset", "--hard", "--quiet"])
 }
 
+/// How files spell a path: with forward slashes, escaped as in a JSON string,
+/// and natively. Only Windows paths differ between the three.
+fn spellings(path: &Path) -> [String; 3] {
+    let text = path.display().to_string();
+    let native = text.strip_prefix(r"\\?\").unwrap_or(&text).to_owned();
+    if cfg!(windows) {
+        let native = native.replace('/', "\\");
+        [
+            native.replace('\\', "/"),
+            native.replace('\\', r"\\"),
+            native,
+        ]
+    } else {
+        [native.clone(), native.clone(), native]
+    }
+}
+
+/// Pairs every spelling of the source, as given and as the filesystem resolves
+/// it, with the target spelt the same way. Longest first, so that no spelling
+/// is replaced inside another.
+fn relocations(source: &Path, target: &Path) -> Vec<(String, String)> {
+    let resolved = |path: &Path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let to = spellings(&resolved(target));
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for from in [spellings(source), spellings(&resolved(source))] {
+        for (from, to) in from.into_iter().zip(&to) {
+            if !pairs.iter().any(|(seen, _)| *seen == from) {
+                pairs.push((from, to.clone()));
+            }
+        }
+    }
+    pairs.sort_by_key(|(from, _)| std::cmp::Reverse(from.len()));
+    pairs
+}
+
+/// Replaces `from` wherever it names the whole path, not the start of a
+/// longer name. Windows paths compare without case.
+fn replace_path(text: &str, from: &str, to: &str) -> Option<String> {
+    let fold = |text: &str| {
+        if cfg!(windows) {
+            text.to_ascii_lowercase()
+        } else {
+            text.to_owned()
+        }
+    };
+    let (haystack, needle) = (fold(text), fold(from));
+    let in_name = |c: char| c.is_alphanumeric() || "-_.~".contains(c);
+    let mut out = String::with_capacity(text.len());
+    let (mut copied, mut at) = (0, 0);
+    while let Some(found) = haystack[at..].find(&needle) {
+        let start = at + found;
+        let end = start + needle.len();
+        let before = text[..start].chars().next_back();
+        let after = text[end..].chars().next();
+        if !before.is_some_and(in_name) && !after.is_some_and(|c| in_name(c) || c == ' ') {
+            out.push_str(&text[copied..start]);
+            out.push_str(to);
+            copied = end;
+            at = end;
+        } else {
+            at = start + text[start..].chars().next().map_or(1, char::len_utf8);
+        }
+    }
+    (copied > 0).then(|| {
+        out.push_str(&text[copied..]);
+        out
+    })
+}
+
+fn relocate_text(text: &str, pairs: &[(String, String)]) -> Option<String> {
+    let mut changed: Option<String> = None;
+    for (from, to) in pairs {
+        let current = changed.as_deref().unwrap_or(text);
+        if let Some(next) = replace_path(current, from, to) {
+            changed = Some(next);
+        }
+    }
+    changed
+}
+
+fn relocate_file(path: &Path, pairs: &[(String, String)]) -> io::Result<()> {
+    let Some(text) = relocate_text(&fs::read_to_string(path)?, pairs) else {
+        return Ok(());
+    };
+    let modified = fs::metadata(path)?.modified()?;
+    let mut file = fs::File::options().write(true).truncate(true).open(path)?;
+    file.write_all(text.as_bytes())?;
+    file.set_modified(modified)
+}
+
+/// Points carried files that record the project's location at the new
+/// worktree. Left alone, their tools would treat the worktree as a moved
+/// project, or reach back into the source.
+fn relocate(plan: &Plan, target: &Path, warnings: &mut Vec<String>) -> Result<()> {
+    let patterns: Vec<String> = plan.projects.iter().flat_map(adapter::relocated).collect();
+    if patterns.is_empty() {
+        return Ok(());
+    }
+    let rules = Rules::new(&patterns)?;
+    let pairs = relocations(&plan.repo.worktree, target);
+    for file in &plan.manifest.files {
+        if rules.includes(&file.rel, false) {
+            if let Err(err) = relocate_file(&target.join(&file.rel), &pairs) {
+                warnings.push(format!("could not update the paths in {}: {err}", file.rel));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// `git worktree add --no-checkout` skips the hook, so it runs here to behave
 /// like a real checkout. As in git, a failing hook does not fail the command.
 fn run_post_checkout(new: &Repo, observer: &dyn Observer) {
@@ -371,6 +483,15 @@ pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<
     if let Some(problem) = &plan.index_problem {
         warnings.push(format!(
             "source index not reused ({problem}); git will do a full checkout"
+        ));
+    }
+    if let Some(first) = plan.refused.first() {
+        let more = match plan.refused.len() {
+            1 => String::new(),
+            n => format!(" and {} more", n - 1),
+        };
+        warnings.push(format!(
+            "{first}{more} left behind: reinstalling is faster than a copy, so it is only carried as a reflink"
         ));
     }
     if !plan.manifest.skipped.is_empty() {
@@ -454,6 +575,7 @@ pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<
         observer.clone_finished();
         let report = report?;
         describe_failures(&report, &mut warnings);
+        relocate(&plan, &new.worktree, &mut warnings)?;
         if plan.index.is_some() {
             let started = Instant::now();
             finish_checkout(&mut plan, &new)?;
@@ -521,6 +643,42 @@ mod tests {
         assert!(!clean_in_source(&recorded, &stat((100, 6), 10), (200, 0)));
         assert!(!clean_in_source(&recorded, &stat((101, 5), 10), (200, 0)));
         assert!(!clean_in_source(&recorded, &stat((100, 5), 11), (200, 0)));
+    }
+
+    fn pair(from: &str, to: &str) -> Vec<(String, String)> {
+        vec![(from.to_owned(), to.to_owned())]
+    }
+
+    #[test]
+    fn replaces_whole_paths_only() {
+        let pairs = pair("/src/game", "/wt/feature");
+        let text = r#"{"a": "/src/game/node_modules", "b": "/src/game", "c": "/src/games", "d": "/x/src/game"}"#;
+        assert_eq!(
+            relocate_text(text, &pairs).unwrap(),
+            r#"{"a": "/wt/feature/node_modules", "b": "/wt/feature", "c": "/src/games", "d": "/x/src/game"}"#
+        );
+        assert_eq!(relocate_text("/src/game copy/x", &pairs), None);
+        assert_eq!(relocate_text("nothing here", &pairs), None);
+    }
+
+    #[test]
+    fn a_target_inside_the_source_is_replaced_once() {
+        let pairs = pair("/src/game", "/src/game/.worktrees/feature");
+        assert_eq!(
+            relocate_text("dir: /src/game/node_modules", &pairs).unwrap(),
+            "dir: /src/game/.worktrees/feature/node_modules"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn relocates_every_spelling_of_a_windows_path() {
+        let pairs = relocations(Path::new("E:/Games/main"), Path::new("E:/Games/feature"));
+        let text = r#"{"virtualStoreDir": "e:\\games\\main\\node_modules\\.pnpm", "dir": "E:/Games/main", "raw": "E:\Games\main\x"}"#;
+        assert_eq!(
+            relocate_text(text, &pairs).unwrap(),
+            r#"{"virtualStoreDir": "E:\\Games\\feature\\node_modules\\.pnpm", "dir": "E:/Games/feature", "raw": "E:\Games\feature\x"}"#
+        );
     }
 
     #[test]

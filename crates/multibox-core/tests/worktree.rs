@@ -841,3 +841,170 @@ fn worktreeinclude_can_bring_expensive_caches_back() {
             .exists()
     );
 }
+
+/// A repository holding a Cargo workspace with one local package, built once.
+fn cargo_repo() -> (TempDir, PathBuf) {
+    let temp = TempDir::new().unwrap();
+    let repo = temp.path().join("main");
+    fs::create_dir(&repo).unwrap();
+    sh(&repo, &["init", "-q", "-b", "master"]);
+    sh(&repo, &["config", "user.email", "test@example.com"]);
+    sh(&repo, &["config", "user.name", "test"]);
+    sh(&repo, &["config", "core.autocrlf", "false"]);
+    write(&repo, ".gitignore", "/target/\n");
+    write(&repo, "Cargo.toml", "[workspace]\nmembers = [\"app\"]\n");
+    write(&repo, "app/Cargo.toml", "[package]\nname = \"app\"\n");
+    write(
+        &repo,
+        "Cargo.lock",
+        "version = 4\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\n\n[[package]]\nname = \"serde\"\nversion = \"1.0.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n",
+    );
+    sh(&repo, &["add", "."]);
+    sh(&repo, &["commit", "-q", "-m", "init"]);
+
+    for rel in [
+        "target/debug/deps/libserde-0123456789abcdef.rlib",
+        "target/debug/.fingerprint/serde-0123456789abcdef/lib-serde",
+        "target/debug/build/serde-fedcba9876543210/output",
+        "target/debug/deps/libapp-1111111111111111.rlib",
+        "target/debug/.fingerprint/app-1111111111111111/lib-app",
+        "target/debug/build/app-2222222222222222/out/generated.rs",
+        "target/debug/incremental/app-3x4y/s-abc/query-cache.bin",
+        "target/debug/app.exe",
+    ] {
+        write(&repo, rel, "built\n");
+    }
+    (temp, repo)
+}
+
+fn copy_mode(path: &str) -> AddOptions {
+    let mut request = options(path, &["--detach"]);
+    request.mode = Mode::Copy;
+    request
+}
+
+#[test]
+fn copy_mode_leaves_target_behind_like_a_native_worktree() {
+    let (_temp, repo) = cargo_repo();
+    add(&repo, &copy_mode("../wt"), &Silent).unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+    assert!(wt.join("app/Cargo.toml").exists());
+    assert!(!wt.join("target").exists());
+}
+
+#[test]
+fn a_carried_target_never_includes_local_packages() {
+    let (_temp, repo) = cargo_repo();
+    write(&repo, ".worktreeinclude", "target/\n");
+    add(&repo, &copy_mode("../wt"), &Silent).unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+
+    // Built from the registry: valid wherever the project lives.
+    assert!(
+        wt.join("target/debug/deps/libserde-0123456789abcdef.rlib")
+            .exists()
+    );
+    assert!(
+        wt.join("target/debug/.fingerprint/serde-0123456789abcdef/lib-serde")
+            .exists()
+    );
+    assert!(
+        wt.join("target/debug/build/serde-fedcba9876543210/output")
+            .exists()
+    );
+
+    // Built from the project: without a fingerprint, Cargo rebuilds it here.
+    assert!(
+        !wt.join("target/debug/.fingerprint/app-1111111111111111")
+            .exists()
+    );
+    assert!(!wt.join("target/debug/build/app-2222222222222222").exists());
+    assert!(!wt.join("target/debug/incremental").exists());
+}
+
+/// A repository holding a pnpm workspace, installed once.
+fn pnpm_repo() -> (TempDir, PathBuf) {
+    let temp = TempDir::new().unwrap();
+    let repo = temp.path().join("main");
+    fs::create_dir(&repo).unwrap();
+    sh(&repo, &["init", "-q", "-b", "master"]);
+    sh(&repo, &["config", "user.email", "test@example.com"]);
+    sh(&repo, &["config", "user.name", "test"]);
+    sh(&repo, &["config", "core.autocrlf", "false"]);
+    write(&repo, ".gitignore", "node_modules/\n");
+    write(&repo, ".worktreeinclude", "node_modules/\n");
+    write(&repo, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+    write(&repo, "package.json", "{}\n");
+    write(&repo, "apps/site/package.json", "{}\n");
+    sh(&repo, &["add", "."]);
+    sh(&repo, &["commit", "-q", "-m", "init"]);
+
+    let root = fs::canonicalize(&repo).unwrap().display().to_string();
+    let root = root.strip_prefix(r"\\?\").unwrap_or(&root).to_owned();
+    let json = root.replace('\\', r"\\");
+    write(
+        &repo,
+        "node_modules/.modules.yaml",
+        &format!(
+            "{{\n  \"virtualStoreDir\": \"{json}{sep}node_modules{sep}.pnpm\"\n}}\n",
+            sep = if cfg!(windows) { r"\\" } else { "/" }
+        ),
+    );
+    write(
+        &repo,
+        "node_modules/left-pad/index.js",
+        "module.exports = 1;\n",
+    );
+    write(&repo, "apps/site/node_modules/.bin/tool", "#!/bin/sh\n");
+    (temp, repo)
+}
+
+#[test]
+fn copy_mode_refuses_pnpm_node_modules_and_says_so() {
+    let (_temp, repo) = pnpm_repo();
+    let outcome = add(&repo, &copy_mode("../wt"), &Silent).unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+    assert!(wt.join("apps/site/package.json").exists());
+    assert!(!wt.join("node_modules").exists());
+    assert!(!wt.join("apps/site/node_modules").exists());
+    assert!(
+        outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.starts_with("node_modules and 1 more left behind")),
+        "{:?}",
+        outcome.warnings
+    );
+}
+
+#[test]
+fn carried_pnpm_state_names_the_new_worktree() {
+    let (_temp, repo) = pnpm_repo();
+    let outcome = add(&repo, &options("../wt", &["--detach"]), &Silent).unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+    if !outcome.capability.reflink {
+        // Copy mode: refused, as above.
+        assert!(!wt.join("node_modules").exists());
+        return;
+    }
+    let state = fs::read_to_string(wt.join("node_modules/.modules.yaml")).unwrap();
+    let new_root = fs::canonicalize(&wt).unwrap().display().to_string();
+    let new_root = new_root
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&new_root)
+        .replace('\\', r"\\");
+    assert!(state.contains(&new_root), "{state}");
+    let old_root = fs::canonicalize(&repo).unwrap().display().to_string();
+    let old_root = old_root
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&old_root)
+        .replace('\\', r"\\");
+    assert!(
+        !state.contains(&format!(
+            "{old_root}{}",
+            if cfg!(windows) { r"\\" } else { "/" }
+        )),
+        "{state}"
+    );
+    assert!(wt.join("node_modules/left-pad/index.js").exists());
+}

@@ -25,6 +25,7 @@ impl Adapter for Unity {
                     engine: "unity",
                     root,
                     version,
+                    local_packages: Vec::new(),
                 }
             })
             .collect()
@@ -221,6 +222,7 @@ mod tests {
             engine: "unity",
             root: "client".to_owned(),
             version: None,
+            local_packages: Vec::new(),
         };
         assert!(
             Unity
@@ -231,6 +233,7 @@ mod tests {
             engine: "unity",
             root: String::new(),
             version: None,
+            local_packages: Vec::new(),
         };
         assert!(Unity.includes(&root).contains(&"/Library/".to_owned()));
     }
