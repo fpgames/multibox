@@ -13,6 +13,15 @@ pub struct PurgeReport {
     pub failures: Vec<String>,
 }
 
+/// Treats an entry that is already gone as done: another purge of the same
+/// directory may be running after an interrupted removal.
+fn tolerate_missing(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
+}
+
 fn remove_file(path: &Path) -> io::Result<()> {
     match fs::remove_file(path) {
         Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
@@ -62,7 +71,8 @@ pub fn purge(root: &Path, threads: Option<usize>) -> io::Result<PurgeReport> {
                     for rel in &leaves[start..(start + 64).min(leaves.len())] {
                         let path = join(&root, rel);
                         // A directory link needs remove_dir on Windows.
-                        if let Err(err) = remove_file(&path).or_else(|_| fs::remove_dir(&path)) {
+                        let removed = remove_file(&path).or_else(|_| fs::remove_dir(&path));
+                        if let Err(err) = tolerate_missing(removed) {
                             failures.lock().unwrap().push(format!("{rel}: {err}"));
                         }
                     }
@@ -74,11 +84,11 @@ pub fn purge(root: &Path, threads: Option<usize>) -> io::Result<PurgeReport> {
     let mut dirs: Vec<&str> = manifest.dirs.iter().map(|dir| dir.rel.as_str()).collect();
     dirs.sort_unstable_by_key(|rel| std::cmp::Reverse(rel.len()));
     for rel in &dirs {
-        if let Err(err) = fs::remove_dir(join(&root, rel)) {
+        if let Err(err) = tolerate_missing(fs::remove_dir(join(&root, rel))) {
             failures.lock().unwrap().push(format!("{rel}: {err}"));
         }
     }
-    if let Err(err) = fs::remove_dir(&root) {
+    if let Err(err) = tolerate_missing(fs::remove_dir(&root)) {
         failures.lock().unwrap().push(format!(".: {err}"));
     }
 

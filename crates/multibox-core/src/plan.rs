@@ -63,12 +63,21 @@ pub fn build_plan(source: &Path, carry: bool, threads: Option<usize>) -> Result<
     let repo = Repo::discover(source)?;
     let (index, index_problem) = read_index(&repo);
 
-    let tracked: Vec<&str> = index
-        .iter()
-        .flat_map(|index| index.entries.iter())
-        .filter(|entry| entry.stage == 0 || entry.stage == 2)
-        .map(|entry| entry.path.as_str())
-        .collect();
+    // Project detection must not depend on the index being reusable: caches
+    // are still worth carrying when git has to do the checkout itself.
+    let listed;
+    let tracked: Vec<&str> = match &index {
+        Some(index) => index
+            .entries
+            .iter()
+            .filter(|entry| entry.stage == 0 || entry.stage == 2)
+            .map(|entry| entry.path.as_str())
+            .collect(),
+        None => {
+            listed = git::output(&repo.worktree, &["ls-files", "-z"])?;
+            listed.split('\0').filter(|path| !path.is_empty()).collect()
+        }
+    };
     let projects = adapter::detect(&repo.worktree, &tracked);
     let rules = Rules::load(&repo.worktree, &projects)?;
 

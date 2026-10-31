@@ -143,10 +143,12 @@ fn refresh_stat(_index: &mut Index, _worktree: &Path) {
 /// exact checkout of its HEAD. Files the source had modified, staged or deleted
 /// are the only ones git has to touch.
 fn finish_checkout(plan: &mut Plan, new: &Repo) -> Result<()> {
-    if let Some(index) = plan.index.as_mut() {
-        refresh_stat(index, &new.worktree);
-        fs::write(new.index_path(), index.to_worktree_bytes()?)?;
-    }
+    let index = plan
+        .index
+        .as_mut()
+        .ok_or_else(|| Error::new("no index to install"))?;
+    refresh_stat(index, &new.worktree);
+    fs::write(new.index_path(), index.to_worktree_bytes()?)?;
     git::quiet(&new.worktree, &["reset", "--hard", "--quiet"])
 }
 
@@ -200,8 +202,8 @@ fn describe_failures(report: &Report, warnings: &mut Vec<String>) {
 /// Creates a worktree, as `git worktree add` would, carrying over everything
 /// the plan selected. `cwd` is where a relative `path` is resolved.
 pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<AddOutcome> {
-    let source = options.from.as_deref().unwrap_or(cwd);
-    let mut plan = build_plan(source, options.carry, options.threads)?;
+    let source = options.from.as_ref().map_or_else(|| cwd.to_path_buf(), |from| cwd.join(from));
+    let mut plan = build_plan(&source, options.carry, options.threads)?;
     let target = cwd.join(&options.path);
     let capability = probe(&plan.repo.worktree, &target)?;
     let strategy = resolve_mode(options.mode);
@@ -261,14 +263,11 @@ pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<
     let mut git_args: Vec<&str> = vec!["worktree", "add"];
     if plan.index.is_some() {
         git_args.push("--no-checkout");
-    } else {
-        plan.manifest
-            .files
-            .retain(|file| !plan.repo.worktree.join(&file.rel).is_dir());
     }
     git_args.extend(options.git_args.iter().map(String::as_str));
     git::run(cwd, &git_args)?;
 
+    let hook_needed = plan.index.is_some();
     let result = (|| -> Result<(Repo, Report)> {
         let new = Repo::discover(&target)?;
         let before = snapshot(&volatile);
@@ -297,18 +296,22 @@ pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<
             );
         }
         describe_failures(&report, &mut warnings);
-        let started = Instant::now();
-        finish_checkout(&mut plan, &new)?;
-        observer.note(&format!(
-            "checked out in {:.1}s",
-            started.elapsed().as_secs_f32()
-        ));
+        if plan.index.is_some() {
+            let started = Instant::now();
+            finish_checkout(&mut plan, &new)?;
+            observer.note(&format!(
+                "checked out in {:.1}s",
+                started.elapsed().as_secs_f32()
+            ));
+        }
         Ok((new, report))
     })();
 
     match result {
         Ok((new, report)) => {
-            run_post_checkout(&new, observer);
+            if hook_needed {
+                run_post_checkout(&new, observer);
+            }
             Ok(AddOutcome {
                 path: new.worktree,
                 summary: plan.summary,

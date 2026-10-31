@@ -182,6 +182,35 @@ fn keeps_timestamps_of_tracked_and_cached_files() {
 }
 
 #[test]
+fn still_carries_caches_when_the_index_cannot_be_reused() {
+    let (_temp, repo) = unity_repo();
+    sh(&repo, &["update-index", "--split-index"]);
+
+    let outcome = add(&repo, &options("../wt", &["--detach"]), &Silent).unwrap();
+    assert!(!outcome.reused_index);
+    assert!(outcome.warnings[0].contains("split index"));
+
+    let wt = repo.parent().unwrap().join("wt");
+    assert_eq!(status(&wt), "");
+    assert!(wt.join("client/Library/ArtifactDB").exists());
+    assert!(!wt.join("client/Library/EditorInstance.json").exists());
+    assert_eq!(
+        fs::read_to_string(wt.join("client/Assets/a.txt")).unwrap(),
+        "committed a\n"
+    );
+}
+
+#[test]
+fn relative_from_is_resolved_against_cwd() {
+    let (_temp, repo) = unity_repo();
+    add(&repo, &options("../first", &["--detach"]), &Silent).unwrap();
+    let mut request = options("../second", &["--detach"]);
+    request.from = Some(PathBuf::from("../first"));
+    add(&repo, &request, &Silent).unwrap();
+    assert!(repo.parent().unwrap().join("second/client/Library").exists());
+}
+
+#[test]
 fn honours_worktreeinclude() {
     let (_temp, repo) = unity_repo();
     write(
