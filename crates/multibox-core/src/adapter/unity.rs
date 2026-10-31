@@ -50,6 +50,10 @@ impl Adapter for Unity {
         [
             // Records the PID of the editor that owns the source project.
             "Library/EditorInstance.json",
+            // PIDs of helper processes. A new editor kills the process named in
+            // ilpp.pid as a leftover, which would take down the source editor's
+            // IL post-processing runner.
+            "Library/*.pid",
             // LMDB lock files hold reader slots of live processes; Unity recreates them.
             "Library/*-lock",
             "Library/*.lock",
