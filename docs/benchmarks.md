@@ -113,7 +113,8 @@ could not be measured: the editor on that machine lost its license after one run
 ## Rust
 
 Multibox's own workspace on the same Windows workstation: 37 crates, 3 of them
-local, with `target/` already built in the source. Each row is the time to
+local, with `target/` already built in the source. macOS resolves one more
+dependency than Windows. Each row is the time to
 create the worktree and run `cargo test --no-run --offline` in it, over two runs.
 
 | | Create | Build | Crates compiled |
@@ -123,6 +124,8 @@ create the worktree and run `cargo test --no-run --offline` in it, over two runs
 | Multibox on NTFS, `target/` in `.worktreeinclude` | 0.41 to 0.42 s | 2.5 to 2.6 s | 3 |
 | Native `git worktree`, Dev Drive | 0.06 s | 4.5 to 4.6 s | 37 |
 | Multibox on Dev Drive | 0.42 s | 2.0 to 2.1 s | 3 |
+| Native `git worktree`, Mac Studio (M5 Max, APFS) | 0.03 to 0.04 s | 2.2 s | 38 |
+| Multibox on the Mac Studio | 0.35 to 0.73 s | 1.0 s | 3 |
 
 On a repository this small Multibox takes about 0.35 seconds longer to create a
 worktree than git does. A one-crate workspace depending on `serde_json` printed
