@@ -5,8 +5,8 @@
 //! `migrate --switch` then redirects the old path to the new location. Neither
 //! step deletes anything: `--switch` keeps the original under a new name.
 
-use crate::add::Observer;
 use crate::adapter;
+use crate::add::Observer;
 use crate::git::{self, Repo};
 use crate::index::Index;
 use crate::{Error, Result};
@@ -44,12 +44,10 @@ struct CopyFilter {
 
 impl TreeFilter for CopyFilter {
     fn check(&self, rel: &str, _is_dir: bool) -> Decision {
-        if self.skipped.iter().any(|path| path == rel) {
-            Decision::Exclude
-        } else if rel.ends_with("/Library/EditorInstance.json")
+        let instance_state = rel.ends_with("/Library/EditorInstance.json")
             || rel == "Library/EditorInstance.json"
-            || (rel.contains("Library/") && rel.ends_with("-lock"))
-        {
+            || (rel.contains("Library/") && rel.ends_with("-lock"));
+        if instance_state || self.skipped.iter().any(|path| path == rel) {
             Decision::Exclude
         } else {
             Decision::Include
@@ -216,7 +214,10 @@ pub fn switch(cwd: &Path, destination: &Path) -> Result<SwitchOutcome> {
         .collect();
     let source_worktrees = repo.common_dir.join("worktrees");
     if source_worktrees.is_dir() {
-        copy_registrations(&source_worktrees, &destination.join(".git").join("worktrees"))?;
+        copy_registrations(
+            &source_worktrees,
+            &destination.join(".git").join("worktrees"),
+        )?;
     }
 
     let name = repo
@@ -225,7 +226,9 @@ pub fn switch(cwd: &Path, destination: &Path) -> Result<SwitchOutcome> {
         .ok_or_else(|| Error::new("cannot switch a filesystem root"))?
         .to_string_lossy()
         .into_owned();
-    let kept_at = repo.worktree.with_file_name(format!("{name}.multibox-original"));
+    let kept_at = repo
+        .worktree
+        .with_file_name(format!("{name}.multibox-original"));
     if kept_at.exists() {
         return Err(Error::new(format!("{} already exists", kept_at.display())));
     }

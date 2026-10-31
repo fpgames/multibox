@@ -40,7 +40,11 @@ pub struct SetupPlan {
 /// The VHDX expands on demand, so it goes on the fixed drive with the most room.
 /// The system drive only wins when there is nothing else.
 fn choose_host(volumes: &[Volume], system_drive: &str) -> Option<Volume> {
-    let candidates = || volumes.iter().filter(|volume| volume.fixed && !volume.reflink);
+    let candidates = || {
+        volumes
+            .iter()
+            .filter(|volume| volume.fixed && !volume.reflink)
+    };
     candidates()
         .filter(|volume| !volume.root.eq_ignore_ascii_case(system_drive))
         .max_by_key(|volume| volume.free)
@@ -85,7 +89,9 @@ pub fn plan_setup(options: &SetupOptions) -> Result<SetupPlan> {
             let system = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_owned());
             let host = choose_host(&known, &format!("{system}\\"))
                 .ok_or_else(|| Error::new("no fixed drive found to hold the VHDX"))?;
-            PathBuf::from(host.root).join("Multibox").join("multibox.vhdx")
+            PathBuf::from(host.root)
+                .join("Multibox")
+                .join("multibox.vhdx")
         }
     };
     if vhdx.exists() {
@@ -97,9 +103,9 @@ pub fn plan_setup(options: &SetupOptions) -> Result<SetupPlan> {
 
     let mount = match &options.mount {
         Some(mount) => mount.clone(),
-        None => Mount::Letter(
-            choose_letter(&known).ok_or_else(|| Error::new("no free drive letter"))?,
-        ),
+        None => {
+            Mount::Letter(choose_letter(&known).ok_or_else(|| Error::new("no free drive letter"))?)
+        }
     };
     if let Mount::Letter(letter) = mount {
         if known.iter().any(|volume| volume.root.starts_with(letter)) {
@@ -283,7 +289,10 @@ mod tests {
 
     #[test]
     fn picks_an_unused_letter() {
-        let volumes = [volume("V:\\", 1, true, false), volume("W:\\", 1, true, false)];
+        let volumes = [
+            volume("V:\\", 1, true, false),
+            volume("W:\\", 1, true, false),
+        ];
         assert_eq!(choose_letter(&volumes), Some('X'));
     }
 

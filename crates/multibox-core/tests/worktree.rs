@@ -28,7 +28,11 @@ fn unity_repo() -> (TempDir, PathBuf) {
     sh(&repo, &["config", "user.email", "test@example.com"]);
     sh(&repo, &["config", "user.name", "test"]);
     sh(&repo, &["config", "core.autocrlf", "false"]);
-    write(&repo, ".gitignore", "client/Library/\nclient/Temp/\nclient/Logs/\nclient/*.csproj\nclient/Assets/Generated/\n*.log\nscratch/\n");
+    write(
+        &repo,
+        ".gitignore",
+        "client/Library/\nclient/Temp/\nclient/Logs/\nclient/*.csproj\nclient/Assets/Generated/\n*.log\nscratch/\n",
+    );
     write(
         &repo,
         "client/ProjectSettings/ProjectVersion.txt",
@@ -42,7 +46,11 @@ fn unity_repo() -> (TempDir, PathBuf) {
 
     write(&repo, "client/Library/ArtifactDB", "artifact db\n");
     write(&repo, "client/Library/ArtifactDB-lock", "lock\n");
-    write(&repo, "client/Library/EditorInstance.json", "{\"process_id\" : 1}\n");
+    write(
+        &repo,
+        "client/Library/EditorInstance.json",
+        "{\"process_id\" : 1}\n",
+    );
     write(&repo, "client/Library/Artifacts/ab/abcd", "imported\n");
     write(&repo, "client/Temp/scratch", "temp\n");
     write(&repo, "client/Logs/Editor.log", "log\n");
@@ -175,7 +183,11 @@ fn keeps_timestamps_of_tracked_and_cached_files() {
     for rel in ["client/Assets/a.txt", "client/Library/ArtifactDB"] {
         let source = fs::metadata(repo.join(rel)).unwrap();
         let clone = fs::metadata(wt.join(rel)).unwrap();
-        assert_eq!(source.modified().unwrap(), clone.modified().unwrap(), "{rel}");
+        assert_eq!(
+            source.modified().unwrap(),
+            clone.modified().unwrap(),
+            "{rel}"
+        );
         #[cfg(windows)]
         assert_eq!(source.created().unwrap(), clone.created().unwrap(), "{rel}");
     }
@@ -207,7 +219,12 @@ fn relative_from_is_resolved_against_cwd() {
     let mut request = options("../second", &["--detach"]);
     request.from = Some(PathBuf::from("../first"));
     add(&repo, &request, &Silent).unwrap();
-    assert!(repo.parent().unwrap().join("second/client/Library").exists());
+    assert!(
+        repo.parent()
+            .unwrap()
+            .join("second/client/Library")
+            .exists()
+    );
 }
 
 #[test]
@@ -358,7 +375,13 @@ fn junctions_into_the_source_follow_the_clone() {
     let link = repo.join("client").join("Library").join("mirror");
     let native = |path: &Path| path.display().to_string().replace('/', "\\");
     let made = std::process::Command::new("cmd")
-        .args(["/c", "mklink", "/J", &native(&link), &native(&source_assets)])
+        .args([
+            "/c",
+            "mklink",
+            "/J",
+            &native(&link),
+            &native(&source_assets),
+        ])
         .output()
         .unwrap();
     assert!(made.status.success());
@@ -367,7 +390,11 @@ fn junctions_into_the_source_follow_the_clone() {
     assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
     let wt = repo.parent().unwrap().join("wt");
 
-    write(&wt, "client/Library/mirror/through-link.txt", "written in the clone\n");
+    write(
+        &wt,
+        "client/Library/mirror/through-link.txt",
+        "written in the clone\n",
+    );
     assert!(wt.join("client/Assets/through-link.txt").exists());
     assert!(!source_assets.join("through-link.txt").exists());
 }
@@ -375,7 +402,11 @@ fn junctions_into_the_source_follow_the_clone() {
 #[test]
 fn unity_virtual_players_stay_behind() {
     let (_temp, repo) = unity_repo();
-    write(&repo, "client/Library/VP/mppm1/Library/data", "virtual player\n");
+    write(
+        &repo,
+        "client/Library/VP/mppm1/Library/data",
+        "virtual player\n",
+    );
     add(&repo, &options("../wt", &["--detach"]), &Silent).unwrap();
     let wt = repo.parent().unwrap().join("wt");
     assert!(wt.join("client/Library/ArtifactDB").exists());

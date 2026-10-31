@@ -370,8 +370,7 @@ mod tests {
         let mut extensions = tree.clone();
         extensions.extend(extension(b"UNTR", b"untracked"));
         extensions.extend(extension(b"FSMN", b"token"));
-        let index =
-            Index::parse(build(2, &[entry("a", 0o100644, None)], &extensions), 20).unwrap();
+        let index = Index::parse(build(2, &[entry("a", 0o100644, None)], &extensions), 20).unwrap();
         let out = index.to_worktree_bytes().unwrap();
         let reread = Index::parse(out.clone(), 20).unwrap();
         assert_eq!(reread.entries.len(), 1);

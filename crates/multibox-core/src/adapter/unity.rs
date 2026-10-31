@@ -142,7 +142,11 @@ mod tests {
             root: "client".to_owned(),
             version: None,
         };
-        assert!(Unity.includes(&project).contains(&"/client/Library/".to_owned()));
+        assert!(
+            Unity
+                .includes(&project)
+                .contains(&"/client/Library/".to_owned())
+        );
         let root = Project {
             engine: "unity",
             root: String::new(),

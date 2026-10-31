@@ -202,7 +202,10 @@ fn describe_failures(report: &Report, warnings: &mut Vec<String>) {
 /// Creates a worktree, as `git worktree add` would, carrying over everything
 /// the plan selected. `cwd` is where a relative `path` is resolved.
 pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<AddOutcome> {
-    let source = options.from.as_ref().map_or_else(|| cwd.to_path_buf(), |from| cwd.join(from));
+    let source = options
+        .from
+        .as_ref()
+        .map_or_else(|| cwd.to_path_buf(), |from| cwd.join(from));
     let mut plan = build_plan(&source, options.carry, options.threads)?;
     let target = cwd.join(&options.path);
     let capability = probe(&plan.repo.worktree, &target)?;

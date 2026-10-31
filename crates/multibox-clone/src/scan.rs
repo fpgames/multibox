@@ -134,9 +134,10 @@ fn walk_dir(
             }
         };
         let Ok(name) = entry.file_name().into_string() else {
-            found
-                .skipped
-                .push(format!("{rel}/{:?}: name is not unicode", entry.file_name()));
+            found.skipped.push(format!(
+                "{rel}/{:?}: name is not unicode",
+                entry.file_name()
+            ));
             continue;
         };
         let child = if rel.is_empty() {

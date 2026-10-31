@@ -121,8 +121,11 @@ fn parse_add(args: Vec<String>) -> Result<(AddOptions, bool), String> {
             "--dry-run" => options.dry_run = true,
             "--threads" => {
                 let value = take_value(&mut args, "--threads")?;
-                options.threads =
-                    Some(value.parse().map_err(|_| format!("bad --threads: {value}"))?);
+                options.threads = Some(
+                    value
+                        .parse()
+                        .map_err(|_| format!("bad --threads: {value}"))?,
+                );
             }
             flag if WITH_VALUE.contains(&flag) => {
                 let value = take_value(&mut args, flag)?;
@@ -355,7 +358,9 @@ fn run_doctor(cwd: &Path, args: &[String]) -> Result<ExitCode, String> {
     }
     let reflink = report.capability.as_ref().is_some_and(|c| c.reflink);
     if !reflink && report.dev_drive_supported == Some(true) {
-        println!("\nNext: `git multibox setup` creates a Dev Drive; `git multibox migrate` then moves this project onto it.");
+        println!(
+            "\nNext: `git multibox setup` creates a Dev Drive; `git multibox migrate` then moves this project onto it."
+        );
     }
     Ok(ExitCode::SUCCESS)
 }

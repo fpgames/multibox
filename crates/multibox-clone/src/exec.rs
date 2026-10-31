@@ -96,12 +96,7 @@ fn parallel<T: Sync, S: Send>(
     })
 }
 
-fn create_dirs(
-    dirs: &[&DirEntry],
-    dst: &Path,
-    threads: usize,
-    failures: &Mutex<Vec<Failure>>,
-) {
+fn create_dirs(dirs: &[&DirEntry], dst: &Path, threads: usize, failures: &Mutex<Vec<Failure>>) {
     let mut start = 0;
     while start < dirs.len() {
         let level = depth(&dirs[start].rel);

@@ -54,7 +54,8 @@ fn trash_path(target: &Path) -> Option<PathBuf> {
 /// still performs its own bookkeeping while the expensive delete happens later.
 fn detach_contents(target: &Path, trash: &Path) -> std::io::Result<()> {
     fs::rename(target, trash)?;
-    let stub = fs::create_dir(target).and_then(|()| fs::copy(trash.join(".git"), target.join(".git")));
+    let stub =
+        fs::create_dir(target).and_then(|()| fs::copy(trash.join(".git"), target.join(".git")));
     if let Err(err) = stub {
         let _ = fs::remove_dir_all(target);
         fs::rename(trash, target)?;
@@ -106,7 +107,8 @@ pub fn remove(cwd: &Path, options: &RemoveOptions) -> Result<RemoveOutcome> {
         }
     }
 
-    let flags: Vec<&str> = std::iter::repeat_n("--force", usize::from(options.force.max(1))).collect();
+    let flags: Vec<&str> =
+        std::iter::repeat_n("--force", usize::from(options.force.max(1))).collect();
     let target_text = target.to_string_lossy().into_owned();
     let mut args = vec!["worktree", "remove"];
     args.extend(&flags);
@@ -170,7 +172,11 @@ pub fn sweep_trash(cwd: &Path) -> Vec<PathBuf> {
             continue;
         };
         for entry in entries.flatten() {
-            if entry.file_name().to_string_lossy().starts_with(TRASH_PREFIX) {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(TRASH_PREFIX)
+            {
                 found.push(entry.path());
             }
         }

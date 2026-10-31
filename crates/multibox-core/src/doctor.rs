@@ -80,7 +80,11 @@ fn check_platform(report: &mut Diagnosis) {
         report.dev_drive_supported = Some(supported);
         let detail = format!("build {build}.{revision}");
         if supported {
-            report.push("Windows", Level::Ok, format!("{detail}, Dev Drive available"));
+            report.push(
+                "Windows",
+                Level::Ok,
+                format!("{detail}, Dev Drive available"),
+            );
         } else {
             report.push(
                 "Windows",
@@ -129,13 +133,21 @@ fn check_repository(report: &mut Diagnosis, cwd: &Path) {
     }
 
     let Ok(index) = Index::read(&repo.index_path(), repo.hash_len) else {
-        report.push("index", Level::Warn, "cannot be reused; git will check out from scratch");
+        report.push(
+            "index",
+            Level::Warn,
+            "cannot be reused; git will check out from scratch",
+        );
         return;
     };
     report.push(
         "index",
         Level::Ok,
-        format!("{} entries, version {}", index.entries.len(), index.version()),
+        format!(
+            "{} entries, version {}",
+            index.entries.len(),
+            index.version()
+        ),
     );
     if let Some(longest) = index.entries.iter().map(|entry| entry.path.len()).max() {
         let total = repo.worktree.as_os_str().len() + 1 + longest;
@@ -150,13 +162,21 @@ fn check_repository(report: &mut Diagnosis, cwd: &Path) {
         }
     }
 
-    let tracked: Vec<&str> = index.entries.iter().map(|entry| entry.path.as_str()).collect();
+    let tracked: Vec<&str> = index
+        .entries
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect();
     for project in adapter::detect(&repo.worktree, &tracked) {
         let name = format!(
             "{} {} at {}",
             project.engine,
             project.version.as_deref().unwrap_or("(unknown version)"),
-            if project.root.is_empty() { "." } else { &project.root }
+            if project.root.is_empty() {
+                "."
+            } else {
+                &project.root
+            }
         );
         report.push("project", Level::Ok, name);
         if let Some(editor) = adapter::running_editor(&repo.worktree, &project) {

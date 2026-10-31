@@ -8,9 +8,7 @@ use std::fs::{self, FileTimes, OpenOptions};
 use std::io;
 use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::fs::{
-    FileTimesExt, FileTypeExt, OpenOptionsExt, symlink_dir, symlink_file,
-};
+use std::os::windows::fs::{FileTimesExt, FileTypeExt, OpenOptionsExt, symlink_dir, symlink_file};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::ptr::{null, null_mut};
@@ -24,10 +22,10 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_SPARSE_FILE, FILE_ATTRIBUTE_SYSTEM, FILE_BASIC_INFO,
     FILE_BEGIN, FILE_END_OF_FILE_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_SEQUENTIAL_SCAN,
     FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO,
-    FILE_WRITE_ATTRIBUTES, FileBasicInfo, FileEndOfFileInfo, FileStandardInfo,
-    GetDiskFreeSpaceExW, GetDiskFreeSpaceW, GetDriveTypeW, GetFileInformationByHandleEx,
-    GetLogicalDrives, GetVolumeInformationW, GetVolumePathNameW, OPEN_EXISTING, ReadFile, SetFileInformationByHandle, SetFilePointerEx,
-    WriteFile,
+    FILE_WRITE_ATTRIBUTES, FileBasicInfo, FileEndOfFileInfo, FileStandardInfo, GetDiskFreeSpaceExW,
+    GetDiskFreeSpaceW, GetDriveTypeW, GetFileInformationByHandleEx, GetLogicalDrives,
+    GetVolumeInformationW, GetVolumePathNameW, OPEN_EXISTING, ReadFile, SetFileInformationByHandle,
+    SetFilePointerEx, WriteFile,
 };
 use windows_sys::Win32::System::IO::DeviceIoControl;
 
@@ -119,7 +117,10 @@ fn volume_root(path: &Path) -> io::Result<Vec<u16>> {
     let path = wide(&existing_ancestor(path));
     let mut root = vec![0u16; path.len().max(64) + 2];
     check(unsafe { GetVolumePathNameW(path.as_ptr(), root.as_mut_ptr(), root.len() as u32) })?;
-    let end = root.iter().position(|unit| *unit == 0).unwrap_or(root.len());
+    let end = root
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(root.len());
     root.truncate(end + 1);
     Ok(root)
 }
@@ -145,7 +146,10 @@ fn volume_info(root: &[u16]) -> io::Result<VolumeInfo> {
             name.len() as u32,
         )
     })?;
-    let end = name.iter().position(|unit| *unit == 0).unwrap_or(name.len());
+    let end = name
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(name.len());
     Ok(VolumeInfo {
         serial,
         flags,
@@ -155,7 +159,15 @@ fn volume_info(root: &[u16]) -> io::Result<VolumeInfo> {
 
 fn cluster_size(root: &[u16]) -> io::Result<u32> {
     let (mut sectors, mut bytes, mut free, mut total) = (0u32, 0u32, 0u32, 0u32);
-    check(unsafe { GetDiskFreeSpaceW(root.as_ptr(), &mut sectors, &mut bytes, &mut free, &mut total) })?;
+    check(unsafe {
+        GetDiskFreeSpaceW(
+            root.as_ptr(),
+            &mut sectors,
+            &mut bytes,
+            &mut free,
+            &mut total,
+        )
+    })?;
     Ok(sectors * bytes)
 }
 
@@ -422,7 +434,13 @@ fn clone_into(
     let size = standard.EndOfFile as u64;
 
     let outcome = if capability.reflink && size > 0 {
-        match reflink(source, target, size, basic.FileAttributes, capability.cluster_size) {
+        match reflink(
+            source,
+            target,
+            size,
+            basic.FileAttributes,
+            capability.cluster_size,
+        ) {
             Ok(()) => Outcome::Reflinked,
             Err(_) => {
                 rewind(target)?;
@@ -491,7 +509,9 @@ pub fn create_link(src: &Path, dst: &Path, target: &Path) -> io::Result<()> {
 fn make_junction(link: &Path, target: &Path) -> io::Result<()> {
     let native = |path: &Path| {
         let text = path.to_string_lossy();
-        text.strip_prefix(r"\\?\").unwrap_or(&text).replace('/', "\\")
+        text.strip_prefix(r"\\?\")
+            .unwrap_or(&text)
+            .replace('/', "\\")
     };
     let output = Command::new("cmd")
         .args(["/c", "mklink", "/J"])
