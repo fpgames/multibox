@@ -14,7 +14,7 @@
 //! user to remove once they are satisfied.
 
 use crate::adapter;
-use crate::add::Observer;
+use crate::add::{Observer, refresh_stat};
 use crate::git::{self, Repo};
 use crate::index::Index;
 use crate::setup::{Mount, SetupOptions, plan_setup, run_setup};
@@ -111,6 +111,21 @@ fn open_editor(repo: &Repo) -> Option<String> {
     })
 }
 
+/// Rewrites the copied index for its new files, so the first `git status` after
+/// a move does not re-hash the whole project. An index that cannot be reused is
+/// left as copied: git simply rebuilds the stat data on its first run.
+fn refresh_copied_index(repo: &Repo, destination: &Path) -> Result<()> {
+    let Ok(mut index) = Index::read(&repo.index_path(), repo.hash_len) else {
+        return Ok(());
+    };
+    refresh_stat(&mut index, &repo.worktree, &repo.index_path(), destination);
+    fs::write(
+        destination.join(".git").join("index"),
+        index.to_worktree_bytes()?,
+    )?;
+    Ok(())
+}
+
 /// Copies the main worktree, history included, to `destination`. The source is
 /// only read, so an open editor is fine: [`switch`] picks up later changes.
 pub fn migrate(
@@ -179,6 +194,7 @@ pub fn migrate(
             report.failures[0].error
         )));
     }
+    refresh_copied_index(&repo, &options.destination)?;
     git::quiet(&options.destination, &["worktree", "prune"])?;
     Ok(MigrateOutcome {
         destination: options.destination.clone(),
@@ -241,6 +257,8 @@ pub fn switch(cwd: &Path, destination: &Path, exclude: &[String]) -> Result<Swit
             failure.error
         )));
     }
+
+    refresh_copied_index(&repo, &destination)?;
 
     let linked: Vec<PathBuf> = git::worktrees(&repo.worktree)?
         .into_iter()

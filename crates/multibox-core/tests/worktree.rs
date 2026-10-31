@@ -572,6 +572,31 @@ fn migrate_copies_without_touching_the_source_or_its_worktrees() {
 }
 
 #[test]
+fn a_moved_project_needs_no_rehash() {
+    let (_temp, repo) = unity_repo();
+    let destination = repo.parent().unwrap().join("moved");
+    // The index must be newer than the files for their stat data to count.
+    std::thread::sleep(Duration::from_millis(50));
+    sh(&repo, &["update-index", "--really-refresh"]);
+    multibox_core::migrate(
+        &repo,
+        &multibox_core::MigrateOptions {
+            destination: destination.clone(),
+            exclude: Vec::new(),
+            dry_run: false,
+            threads: Some(2),
+        },
+        &Silent,
+    )
+    .unwrap();
+    // diff-files trusts the index as it is, so a stale entry shows up here.
+    assert_eq!(sh(&destination, &["diff-files", "--name-only"]), "");
+
+    multibox_core::switch(&repo, &destination, &[]).unwrap();
+    assert_eq!(sh(&destination, &["diff-files", "--name-only"]), "");
+}
+
+#[test]
 fn migrate_leaves_excluded_paths_behind() {
     let (_temp, repo) = unity_repo();
     write(&repo, "server/target/debug/huge.bin", "build output\n");

@@ -246,7 +246,7 @@ fn clean_in_source(recorded: &Stat, actual: &Stat, index_time: (u32, u32)) -> bo
 /// Only entries that are clean in the source qualify. A file edited there must
 /// keep its stale entry: rewriting it would tell git the clone's content is
 /// what the index records, and the edit would survive `reset --hard` unseen.
-fn refresh_stat(index: &mut Index, source: &Path, index_path: &Path, worktree: &Path) {
+pub(crate) fn refresh_stat(index: &mut Index, source: &Path, index_path: &Path, worktree: &Path) {
     let Ok(index_meta) = fs::metadata(index_path) else {
         return;
     };
