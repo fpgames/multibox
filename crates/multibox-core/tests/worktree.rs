@@ -1128,7 +1128,15 @@ fn finish_refuses_uncommitted_work_and_changes_nothing() {
     let err = finish(&repo, &finish_options("../wt")).unwrap_err();
     assert!(err.to_string().contains("uncommitted"), "{err}");
     assert_eq!(status(&wt), " M client/Assets/a.txt\n");
-    assert_eq!(sh(&repo, &["branch", "--list", "task"]).trim(), "task");
+    // `git branch --list` marks a branch checked out elsewhere with "+".
+    assert_eq!(
+        sh(
+            &repo,
+            &["branch", "--list", "--format=%(refname:short)", "task"]
+        )
+        .trim(),
+        "task"
+    );
 }
 
 #[test]

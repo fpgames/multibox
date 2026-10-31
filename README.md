@@ -76,6 +76,7 @@ off. The measurements behind these rules are in
 ```
 git multibox add [<options>] <path> [<commit-ish>]
 git multibox remove [-f] <worktree>
+git multibox finish [--keep-branch] <worktree> [-- <merge options>]
 git multibox init [--project <path>] [--to <path>] [--exclude <path>]...
 git multibox doctor
 git multibox env
@@ -100,6 +101,33 @@ switches a project.
 `remove` has the same safety rules as `git worktree remove`, refuses while an
 editor has the project open, and returns immediately: the deletion continues in
 the background. Use `--wait` to stay in the foreground.
+
+## Bringing work back
+
+A Multibox worktree is an ordinary git worktree, so its branch merges, rebases
+and goes through pull requests exactly as with `git worktree`. `finish` does
+the usual local round trip in one step, run from the worktree that receives
+the work:
+
+```bash
+git multibox finish ../feature           # merge feature here, then remove it
+git multibox finish ../feature -- --no-ff
+```
+
+It checks everything before changing anything: the work must be committed, the
+receiving worktree clean, and no editor may have the finished worktree open. A
+merge that hits conflicts stops and stays in progress, as `git merge` leaves
+it; resolve and commit, then run `finish` again to clean up. Once merged, the
+worktree and its branch are removed.
+
+Adapters can tune the merge. In Unity projects `finish` passes
+`-X find-renames=90%`: `.meta` files are small and alike, and git's default
+50% similarity pairs unrelated ones as renames. Replaying 35 real merges of a
+Unity 6 project, that caused a fifth of all conflicts and once replaced a GUID
+both branches agreed on; the stricter threshold removed those conflicts and
+changed none of the merges that were already clean. Unity's own UnityYAMLMerge
+is not used: none of those conflicts were in scenes or prefabs, and it waits
+for a graphical merge tool when it cannot decide, which blocks an agent.
 
 ## What gets carried
 
