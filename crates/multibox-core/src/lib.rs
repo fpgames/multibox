@@ -21,7 +21,7 @@ pub use doctor::{Check, Diagnosis, Level, diagnose};
 pub use migrate::{MigrateOptions, MigrateOutcome, SwitchOutcome, migrate, switch};
 pub use multibox_clone::{Capability, Progress, Report, Strategy, Volume};
 pub use plan::{Plan, PlanSummary, build_plan};
-pub use remove::{RemoveOptions, RemoveOutcome, purge_trash, remove, sweep_trash};
+pub use remove::{RemoveOptions, RemoveOutcome, purge_trash, remove, spawn_detached, sweep_trash};
 pub use rules::Rules;
 pub use setup::{Mount, SetupOptions, SetupPlan, plan_setup, render_script, run_setup};
 

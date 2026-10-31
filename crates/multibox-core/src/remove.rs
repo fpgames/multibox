@@ -4,6 +4,7 @@ use crate::index::Index;
 use crate::{Error, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 const TRASH_PREFIX: &str = ".multibox-trash-";
 
@@ -152,6 +153,40 @@ pub fn purge_trash(path: &Path) -> Result<multibox_clone::PurgeReport> {
         )));
     }
     Ok(multibox_clone::purge(path, None)?)
+}
+
+/// A pipe held by the caller stays open for as long as any process has a copy of
+/// it, so a child that inherits one keeps the caller waiting for EOF. Rust's
+/// spawn passes on every inheritable handle, even with stdio redirected.
+#[cfg(windows)]
+fn disown_standard_handles() {
+    use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+    use windows_sys::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+    for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        unsafe {
+            SetHandleInformation(GetStdHandle(id), HANDLE_FLAG_INHERIT, 0);
+        }
+    }
+}
+
+/// Runs `command` as a background process that outlives this one and does not
+/// hold on to the caller's terminal or pipes.
+pub fn spawn_detached(mut command: Command) -> std::io::Result<()> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+        disown_standard_handles();
+    }
+    command.spawn().map(|_| ())
 }
 
 /// Finds trash left next to the worktrees of this repository by an interrupted

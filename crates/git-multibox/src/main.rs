@@ -6,10 +6,10 @@
 use multibox_core::{
     AddOptions, Level, MigrateOptions, Mode, Mount, Observer, Progress, RemoveOptions,
     SetupOptions, adapter, add, diagnose, git, migrate, plan_setup, purge_trash, remove, run_setup,
-    sweep_trash, switch,
+    spawn_detached, sweep_trash, switch,
 };
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{Command, ExitCode};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -241,20 +241,8 @@ fn run_add(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
 /// Starts a detached copy of this program that outlives the current command.
 fn spawn_purge(trash: &Path) -> std::io::Result<()> {
     let mut command = Command::new(std::env::current_exe()?);
-    command
-        .arg("__purge")
-        .arg(trash)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
-    }
-    command.spawn().map(|_| ())
+    command.arg("__purge").arg(trash);
+    spawn_detached(command)
 }
 
 fn run_remove(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
