@@ -61,6 +61,8 @@ fn filesystem_name(info: &libc::statfs) -> String {
 }
 
 #[cfg(not(target_os = "macos"))]
+// The width of f_type differs between targets, so the cast is not always a no-op.
+#[allow(clippy::unnecessary_cast)]
 fn filesystem_name(info: &libc::statfs) -> String {
     match info.f_type as i64 {
         0x9123_683E => "btrfs".to_owned(),

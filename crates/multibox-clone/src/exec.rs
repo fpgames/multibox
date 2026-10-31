@@ -141,7 +141,20 @@ fn rebase_link(target: &Path, src_root: &Path, dst_root: &Path) -> PathBuf {
 }
 
 fn clone_link(src: &Path, dst: &Path, src_root: &Path, dst_root: &Path) -> io::Result<()> {
-    let target = rebase_link(&fs::read_link(src)?, src_root, dst_root);
+    let written = fs::read_link(src)?;
+    // Compare where the link really leads, not how it is written: the target may
+    // spell the source differently, for example with a Windows 8.3 short name.
+    let resolved = if written.is_absolute() {
+        fs::canonicalize(src).unwrap_or_else(|_| written.clone())
+    } else {
+        written.clone()
+    };
+    let rebased = rebase_link(&resolved, src_root, dst_root);
+    let target = if rebased == resolved {
+        written
+    } else {
+        rebased
+    };
     sys::create_link(src, dst, &target)
 }
 
