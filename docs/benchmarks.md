@@ -169,6 +169,31 @@ file pointed at the source. Before its state files were rewritten, pnpm refused 
 The first Multibox run after a fresh checkout took 11 to 12 seconds to create a
 worktree, on both drives; every later run matched git. This was not investigated.
 
+## Where a new Cindy worktree spends its time
+
+The same Cindy checkout on NTFS, at commit 1eb2eb388d: from creating a worktree
+to a working development build, a type check and an installer. Run twice in
+the same worktree, a step shows what a cache could save at most.
+
+| | Native, first run | Native, second run | Multibox, first run |
+| --- | --- | --- | --- |
+| Create and `pnpm install` | 4.6 s + 24.8 s | | 4.4 s + 23.6 s |
+| Type check | 106 s | 106 s | nothing to carry |
+| Type check, incremental | 107 s | 19 s | 19 s |
+| Development build until the UI responds | 72 s | 65 s | 68 s |
+| Installer (`pnpm build`) | 274 s | 192 s | 224 s, `target/` carried |
+
+- **Type check.** Cindy checked without `--incremental`, so every run started
+  over. With it, the build info carried by Multibox made the first check in a
+  new worktree as fast as a repeat, and a type error added in that worktree was
+  still reported.
+- **Installer.** Seven Rust crates compile in it. A new worktree compiled 425
+  crates, one with `target/` carried 39: the workspaces' own and one helper
+  that builds into a fresh directory every time. Copying the 2.4 GiB of
+  `target/` on NTFS left creation time unchanged.
+- **Development build.** Most of it is Vite bundling the main process and its
+  workers, which keeps no cache between runs. Nothing carried can help there.
+
 ## Still to measure
 
 - Native import time and reopening on macOS.

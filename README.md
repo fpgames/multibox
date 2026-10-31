@@ -60,8 +60,8 @@ off. The measurements behind these rules are in
 [docs/benchmarks.md](docs/benchmarks.md):
 
 - **Without an adapter, a worktree is a native one.** Only tracked files are
-  cloned, plus what `.worktreeinclude` names. A Python, Go, npm or iOS project
-  gets exactly what `git worktree add` would give it.
+  cloned, plus what `.worktreeinclude` names. A Python, Go or iOS project gets
+  exactly what `git worktree add` would give it.
 - **A cache is carried only if cloning it beats rebuilding it.** Where the
   project's own tooling restores a cache faster, it stays behind.
 - **Nothing an adapter carries reaches back into the source.** Links into the
@@ -129,6 +129,15 @@ is not carried by default. In copy mode it stays behind even when
 project path pnpm records in `node_modules/.modules.yaml` and its workspace
 state is rewritten for the new worktree; otherwise pnpm would offer to delete
 and reinstall everything.
+
+**TypeScript** projects are found by their tracked `tsconfig*.json`. Incremental
+type checking (`tsc --noEmit --incremental`) keeps its state in a
+`.tsbuildinfo` file, and a new worktree reuses the source's: tsc records files
+relative to it and compares their contents, so it only rechecks what differs.
+Build info is looked for next to each tsconfig, in its `outDir`, and where its
+`tsBuildInfoFile` points, including inside `node_modules/` as create-vite sets
+it up. It is carried in every mode, but only if the run emitted nothing: tsc
+trusts its record of emitted files, and the worktree would not have them.
 
 Everything else is opt-in through a `.worktreeinclude` file at the repository
 root. It uses gitignore syntax and only applies to ignored files:
