@@ -273,7 +273,12 @@ pub fn switch(cwd: &Path, destination: &Path, exclude: &[String]) -> Result<Swit
         )?;
     }
 
-    fs::rename(&repo.worktree, &kept_at)?;
+    fs::rename(&repo.worktree, &kept_at).map_err(|err| {
+        Error::new(format!(
+            "cannot rename {}: {err}. Close anything using it, such as an IDE or a terminal in that folder, and run this again; nothing was switched",
+            repo.worktree.display()
+        ))
+    })?;
     if let Err(err) = make_directory_link(&repo.worktree, &destination) {
         fs::rename(&kept_at, &repo.worktree)?;
         return Err(err);
@@ -288,27 +293,40 @@ pub fn switch(cwd: &Path, destination: &Path, exclude: &[String]) -> Result<Swit
     })
 }
 
+/// Copies the registrations the destination does not have yet, so that a switch
+/// stopped by a failed rename can simply be run again.
 fn copy_registrations(from: &Path, to: &Path) -> Result<()> {
     let everything = |_: &str, _: bool| Decision::Include;
-    let manifest = scan(
-        from,
-        &ScanRequest {
-            files: Vec::new(),
-            links: Vec::new(),
-            trees: vec![String::new()],
-            filter: &everything,
-            threads: None,
-        },
-    )?;
     fs::create_dir_all(to)?;
-    let report = execute(&manifest, from, to, &Options::default())?;
-    match report.failures.first() {
-        Some(failure) => Err(Error::new(format!(
-            "cannot copy worktree registration {}: {}",
-            failure.path, failure.error
-        ))),
-        None => Ok(()),
+    for entry in fs::read_dir(from)? {
+        let source = entry?.path();
+        let Some(name) = source.file_name() else {
+            continue;
+        };
+        let target = to.join(name);
+        if target.exists() {
+            continue;
+        }
+        let manifest = scan(
+            &source,
+            &ScanRequest {
+                files: Vec::new(),
+                links: Vec::new(),
+                trees: vec![String::new()],
+                filter: &everything,
+                threads: None,
+            },
+        )?;
+        fs::create_dir_all(&target)?;
+        let report = execute(&manifest, &source, &target, &Options::default())?;
+        if let Some(failure) = report.failures.first() {
+            return Err(Error::new(format!(
+                "cannot copy worktree registration {}: {}",
+                failure.path, failure.error
+            )));
+        }
     }
+    Ok(())
 }
 
 #[cfg(windows)]

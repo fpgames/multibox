@@ -509,6 +509,49 @@ fn unity_virtual_players_stay_behind() {
 
 #[cfg(windows)]
 #[test]
+fn switch_can_be_retried_after_something_held_the_project_open() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let (_temp, repo) = unity_repo();
+    let base = repo.parent().unwrap().to_path_buf();
+    add(&repo, &options("../linked", &["--detach"]), &Silent).unwrap();
+    let destination = base.join("moved");
+    multibox_core::migrate(
+        &repo,
+        &multibox_core::MigrateOptions {
+            destination: destination.clone(),
+            exclude: Vec::new(),
+            dry_run: false,
+            threads: Some(2),
+        },
+        &Silent,
+    )
+    .unwrap();
+
+    let held = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(repo.join("README.md"))
+        .unwrap();
+    let error = multibox_core::switch(&repo, &destination, &[]).unwrap_err();
+    assert!(
+        error.to_string().contains("nothing was switched"),
+        "{error}"
+    );
+    assert!(
+        repo.join(".git").is_dir(),
+        "the original must stay in place"
+    );
+    drop(held);
+
+    multibox_core::switch(&repo, &destination, &[]).unwrap();
+    assert!(repo.join("README.md").exists());
+    assert_eq!(git::worktrees(&destination).unwrap().len(), 2);
+    assert_eq!(status(&base.join("linked")), "");
+}
+
+#[cfg(windows)]
+#[test]
 fn purge_does_not_follow_junctions() {
     let temp = TempDir::new().unwrap();
     let outside = temp.path().join("outside");
