@@ -69,8 +69,7 @@ is detached; the actual deletion of 715,000 files took about 41 seconds.
 
 ## Moving a project onto the Dev Drive
 
-664,711 files (102.6 GiB) took 498.6 seconds with the editor open, before the
-switch to `CopyFileExW`.
+A full copy of 942,388 files (315.8 GiB) took 548.9 seconds with the editor open.
 
 ## Several worktrees next to the main editor
 
@@ -89,9 +88,10 @@ not hold still long enough to be copied.
 
 ## macOS
 
-On an arm64 Mac Studio with APFS, using a synthetic repository of 120,004 files and
-5 GB of data: 5.6 seconds to create, no measurable disk use, 0.05 seconds to remove.
-No real Unity project has been measured on macOS yet.
+On an arm64 Mac Studio with APFS, using a synthetic repository of 120,005 files and
+5 GB of data: 5.3 seconds to create, 34 to 90 MiB of disk per worktree, and 0.05
+seconds to remove. A native worktree of the tracked files alone took 3.8 seconds
+and 2.9 GiB. No real Unity project has been measured on macOS yet.
 
 ## Still to measure
 
