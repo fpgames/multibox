@@ -8,12 +8,15 @@ use std::fs::{self, FileTimes, OpenOptions};
 use std::io;
 use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::fs::{FileTimesExt, OpenOptionsExt, symlink_dir, symlink_file};
+use std::os::windows::fs::{
+    FileTimesExt, FileTypeExt, OpenOptionsExt, symlink_dir, symlink_file,
+};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_FILE_EXISTS, ERROR_PATH_NOT_FOUND, GENERIC_READ, GENERIC_WRITE, HANDLE,
-    INVALID_HANDLE_VALUE,
+    CloseHandle, ERROR_FILE_EXISTS, ERROR_PATH_NOT_FOUND, ERROR_PRIVILEGE_NOT_HELD, GENERIC_READ,
+    GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_HIDDEN,
@@ -467,12 +470,40 @@ pub fn clone_file(
     result
 }
 
-pub fn clone_link(src: &Path, dst: &Path) -> io::Result<()> {
-    let target = fs::read_link(src)?;
-    if fs::metadata(src).map(|meta| meta.is_dir()).unwrap_or(false) {
-        symlink_dir(target, dst)
+/// Recreates a link. Junctions and directory symlinks fall back to a junction
+/// when the account lacks the symlink privilege, which is the default on
+/// Windows without Developer Mode. A file symlink has no such fallback.
+pub fn create_link(src: &Path, dst: &Path, target: &Path) -> io::Result<()> {
+    let is_dir = fs::symlink_metadata(src)
+        .map(|meta| meta.file_type().is_symlink_dir())
+        .unwrap_or(false);
+    if !is_dir {
+        return symlink_file(target, dst);
+    }
+    match symlink_dir(target, dst) {
+        Err(err) if err.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD as i32) => {
+            make_junction(dst, target)
+        }
+        other => other,
+    }
+}
+
+fn make_junction(link: &Path, target: &Path) -> io::Result<()> {
+    let native = |path: &Path| {
+        let text = path.to_string_lossy();
+        text.strip_prefix(r"\\?\").unwrap_or(&text).replace('/', "\\")
+    };
+    let output = Command::new("cmd")
+        .args(["/c", "mklink", "/J"])
+        .arg(native(link))
+        .arg(native(target))
+        .output()?;
+    if output.status.success() {
+        Ok(())
     } else {
-        symlink_file(target, dst)
+        Err(io::Error::other(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        ))
     }
 }
 

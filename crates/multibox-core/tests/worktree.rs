@@ -322,6 +322,39 @@ fn purge_refuses_anything_that_is_not_trash() {
 
 #[cfg(windows)]
 #[test]
+fn junctions_into_the_source_follow_the_clone() {
+    let (_temp, repo) = unity_repo();
+    write(&repo, ".worktreeinclude", "/client/Library/\n");
+    let source_assets = repo.join("client").join("Assets");
+    let link = repo.join("client").join("Library").join("mirror");
+    let native = |path: &Path| path.display().to_string().replace('/', "\\");
+    let made = std::process::Command::new("cmd")
+        .args(["/c", "mklink", "/J", &native(&link), &native(&source_assets)])
+        .output()
+        .unwrap();
+    assert!(made.status.success());
+
+    let outcome = add(&repo, &options("../wt", &["--detach"]), &Silent).unwrap();
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    let wt = repo.parent().unwrap().join("wt");
+
+    write(&wt, "client/Library/mirror/through-link.txt", "written in the clone\n");
+    assert!(wt.join("client/Assets/through-link.txt").exists());
+    assert!(!source_assets.join("through-link.txt").exists());
+}
+
+#[test]
+fn unity_virtual_players_stay_behind() {
+    let (_temp, repo) = unity_repo();
+    write(&repo, "client/Library/VP/mppm1/Library/data", "virtual player\n");
+    add(&repo, &options("../wt", &["--detach"]), &Silent).unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+    assert!(wt.join("client/Library/ArtifactDB").exists());
+    assert!(!wt.join("client/Library/VP").exists());
+}
+
+#[cfg(windows)]
+#[test]
 fn purge_does_not_follow_junctions() {
     let temp = TempDir::new().unwrap();
     let outside = temp.path().join("outside");
@@ -358,10 +391,11 @@ fn migrate_copies_without_touching_the_source_or_its_worktrees() {
         &repo,
         &multibox_core::MigrateOptions {
             destination: destination.clone(),
+            exclude: Vec::new(),
             dry_run: false,
             threads: Some(2),
         },
-        None,
+        &Silent,
     )
     .unwrap();
 
@@ -382,6 +416,27 @@ fn migrate_copies_without_touching_the_source_or_its_worktrees() {
 }
 
 #[test]
+fn migrate_leaves_excluded_paths_behind() {
+    let (_temp, repo) = unity_repo();
+    write(&repo, "server/target/debug/huge.bin", "build output\n");
+    let destination = repo.parent().unwrap().join("moved");
+    multibox_core::migrate(
+        &repo,
+        &multibox_core::MigrateOptions {
+            destination: destination.clone(),
+            exclude: vec!["server/target/".to_owned()],
+            dry_run: false,
+            threads: Some(2),
+        },
+        &Silent,
+    )
+    .unwrap();
+    assert!(!destination.join("server/target").exists());
+    assert!(destination.join("client/Library/ArtifactDB").exists());
+    assert!(repo.join("server/target/debug/huge.bin").exists());
+}
+
+#[test]
 fn migrate_refuses_an_existing_destination() {
     let (_temp, repo) = unity_repo();
     let occupied = repo.parent().unwrap().join("moved");
@@ -390,10 +445,11 @@ fn migrate_refuses_an_existing_destination() {
         &repo,
         &multibox_core::MigrateOptions {
             destination: occupied.clone(),
+            exclude: Vec::new(),
             dry_run: false,
             threads: Some(2),
         },
-        None,
+        &Silent,
     );
     assert!(result.is_err());
     assert!(occupied.join("precious.txt").exists());
@@ -409,10 +465,11 @@ fn switch_keeps_the_original_and_redirects_the_old_path() {
         &repo,
         &multibox_core::MigrateOptions {
             destination: destination.clone(),
+            exclude: Vec::new(),
             dry_run: false,
             threads: Some(2),
         },
-        None,
+        &Silent,
     )
     .unwrap();
 
@@ -446,10 +503,11 @@ fn switch_refuses_a_stale_copy() {
         &repo,
         &multibox_core::MigrateOptions {
             destination: destination.clone(),
+            exclude: Vec::new(),
             dry_run: false,
             threads: Some(2),
         },
-        None,
+        &Silent,
     )
     .unwrap();
     write(&repo, "later.txt", "new work\n");

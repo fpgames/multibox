@@ -53,6 +53,11 @@ impl Adapter for Unity {
             // LMDB lock files hold reader slots of live processes; Unity recreates them.
             "Library/*-lock",
             "Library/*.lock",
+            "Library/Temp/",
+            "Library/TempArtifacts/",
+            // Multiplayer Play Mode's virtual players: rebuilt on demand, and they
+            // hold junctions into the source project's Assets and ProjectSettings.
+            "Library/VP/",
             "Assets/_Recovery/",
             "Assets/_Recovery.meta",
             "Temp/",

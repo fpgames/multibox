@@ -3,7 +3,7 @@ use crate::sys::{self, Capability, Outcome};
 use crate::{join, thread_count};
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -128,6 +128,28 @@ fn create_dirs(
     }
 }
 
+fn strip_verbatim(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text))
+}
+
+/// An absolute link into the source tree must follow the clone. Left alone it
+/// would keep pointing at the source, and writes through the new tree would
+/// change the original project.
+fn rebase_link(target: &Path, src_root: &Path, dst_root: &Path) -> PathBuf {
+    let plain_target = strip_verbatim(target);
+    let plain_source = strip_verbatim(src_root);
+    match plain_target.strip_prefix(&plain_source) {
+        Ok(rest) => strip_verbatim(dst_root).join(rest),
+        Err(_) => target.to_path_buf(),
+    }
+}
+
+fn clone_link(src: &Path, dst: &Path, src_root: &Path, dst_root: &Path) -> io::Result<()> {
+    let target = rebase_link(&fs::read_link(src)?, src_root, dst_root);
+    sys::create_link(src, dst, &target)
+}
+
 #[derive(Default)]
 struct Tally {
     reflinked: u64,
@@ -217,7 +239,7 @@ pub fn execute(
     }
 
     for link in &manifest.links {
-        match sys::clone_link(&join(&src, &link.rel), &join(&dst, &link.rel)) {
+        match clone_link(&join(&src, &link.rel), &join(&dst, &link.rel), &src, &dst) {
             Ok(()) => report.links += 1,
             Err(error) => report.failures.push(Failure {
                 path: link.rel.clone(),
@@ -245,4 +267,28 @@ pub fn execute(
     report.capability = Some(capability);
     report.elapsed = started.elapsed();
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rebases_links_into_the_source_tree() {
+        let src = Path::new("/projects/game");
+        let dst = Path::new("/work/feature");
+        assert_eq!(
+            rebase_link(Path::new("/projects/game/client/Assets"), src, dst),
+            Path::new("/work/feature/client/Assets")
+        );
+    }
+
+    #[test]
+    fn leaves_other_links_alone() {
+        let src = Path::new("/projects/game");
+        let dst = Path::new("/work/feature");
+        for target in ["/projects/gameplay/x", "/opt/sdk", "../relative"] {
+            assert_eq!(rebase_link(Path::new(target), src, dst), Path::new(target));
+        }
+    }
 }

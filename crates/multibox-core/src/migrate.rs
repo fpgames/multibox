@@ -5,6 +5,7 @@
 //! `migrate --switch` then redirects the old path to the new location. Neither
 //! step deletes anything: `--switch` keeps the original under a new name.
 
+use crate::add::Observer;
 use crate::adapter;
 use crate::git::{self, Repo};
 use crate::index::Index;
@@ -19,6 +20,9 @@ use std::sync::Arc;
 
 pub struct MigrateOptions {
     pub destination: PathBuf,
+    /// Paths relative to the repository root to leave behind, typically build
+    /// output that can be regenerated.
+    pub exclude: Vec<String>,
     pub dry_run: bool,
     pub threads: Option<usize>,
 }
@@ -84,11 +88,11 @@ fn refuse_if_editor_open(repo: &Repo, action: &str) -> Result<()> {
 }
 
 /// Copies the main worktree, history included, to `destination`. The source is
-/// only read. `progress` receives live counters.
+/// only read.
 pub fn migrate(
     cwd: &Path,
     options: &MigrateOptions,
-    progress: Option<Arc<Progress>>,
+    observer: &dyn Observer,
 ) -> Result<MigrateOutcome> {
     let repo = main_worktree(cwd)?;
     if !options.dry_run {
@@ -102,6 +106,12 @@ pub fn migrate(
     }
 
     let mut skipped = vec![".git/worktrees".to_owned()];
+    skipped.extend(
+        options
+            .exclude
+            .iter()
+            .map(|path| path.trim_matches('/').to_owned()),
+    );
     for project in projects(&repo) {
         skipped.push(project.path("Temp"));
         skipped.push(project.path("Logs"));
@@ -137,6 +147,8 @@ pub fn migrate(
     }
 
     fs::create_dir_all(&options.destination)?;
+    let progress = Arc::new(Progress::default());
+    observer.clone_started(files, bytes, progress.clone());
     let report = execute(
         &manifest,
         &repo.worktree,
@@ -144,9 +156,11 @@ pub fn migrate(
         &Options {
             strategy: Strategy::Copy,
             threads: options.threads,
-            progress: progress.as_deref(),
+            progress: Some(&progress),
         },
-    )?;
+    );
+    observer.clone_finished();
+    let report = report?;
     if !report.failures.is_empty() {
         return Err(Error::new(format!(
             "{} file(s) could not be copied, first: {}: {}; the source is unchanged",

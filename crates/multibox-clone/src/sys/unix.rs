@@ -177,8 +177,8 @@ pub fn clone_file(
     Ok(Outcome::Copied)
 }
 
-pub fn clone_link(src: &Path, dst: &Path) -> io::Result<()> {
-    symlink(fs::read_link(src)?, dst)
+pub fn create_link(_src: &Path, dst: &Path, target: &Path) -> io::Result<()> {
+    symlink(target, dst)
 }
 
 pub fn set_dir_times(path: &Path, times: &Times) -> io::Result<()> {

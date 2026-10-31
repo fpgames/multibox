@@ -14,6 +14,7 @@ multibox-clone = { path = "crates/multibox-clone", version = "0.1.0" }
 multibox-core = { path = "crates/multibox-core", version = "0.1.0" }
 ignore = "0.4"
 libc = "0.2"
+serde_json = "1"
 sha1 = "0.10"
 sha2 = "0.10"
 tempfile = "3"

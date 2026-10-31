@@ -19,9 +19,9 @@ const USAGE: &str = "\
 usage: git multibox add [<options>] <path> [<commit-ish>]
        git multibox remove [-f] <worktree>
        git multibox <list|lock|move|prune|repair|unlock> ...
-       git multibox doctor
+       git multibox doctor [--json]
        git multibox setup [--vhdx <file>] [--size <GiB>] [--letter <X> | --folder <dir>] [--dry-run]
-       git multibox migrate <destination> [--dry-run]
+       git multibox migrate <destination> [--exclude <path>]... [--dry-run]
        git multibox migrate --switch <destination>
 
 Multibox-specific options for add:
@@ -31,9 +31,11 @@ Multibox-specific options for add:
     --no-cache          leave ignored caches behind
     --threads <n>       number of worker threads
     --dry-run           show what would be cloned and stop
+    --json              print the result as JSON on stdout
 
 Options for remove:
     --wait              delete in the foreground instead of in the background
+    --json              print the result as JSON on stdout
 
 Every option of `git worktree add` is accepted and passed through.
 ";
@@ -95,7 +97,7 @@ fn take_value(args: &mut std::vec::IntoIter<String>, flag: &str) -> Result<Strin
     args.next().ok_or_else(|| format!("{flag} needs a value"))
 }
 
-fn parse_add(args: Vec<String>) -> Result<AddOptions, String> {
+fn parse_add(args: Vec<String>) -> Result<(AddOptions, bool), String> {
     const WITH_VALUE: [&str; 4] = ["-b", "-B", "--reason", "--orphan"];
     let mut options = AddOptions {
         git_args: Vec::new(),
@@ -107,9 +109,11 @@ fn parse_add(args: Vec<String>) -> Result<AddOptions, String> {
         threads: None,
     };
     let mut positional = 0;
+    let mut json = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--json" => json = true,
             "--from" => options.from = Some(PathBuf::from(take_value(&mut args, "--from")?)),
             "--copy" => options.mode = Mode::Copy,
             "--reflink" => options.mode = Mode::Reflink,
@@ -138,7 +142,11 @@ fn parse_add(args: Vec<String>) -> Result<AddOptions, String> {
     if options.path.is_empty() {
         return Err("add needs a <path>".to_owned());
     }
-    Ok(options)
+    if json {
+        // git prints its own summary on stdout, which must stay parseable.
+        options.git_args.insert(0, "--quiet".to_owned());
+    }
+    Ok((options, json))
 }
 
 /// These forms have nothing to accelerate: they produce no checkout, or no
@@ -152,7 +160,7 @@ fn run_add(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
     if is_native_add(&args) {
         return passthrough(cwd, "add", args);
     }
-    let options = parse_add(args)?;
+    let (options, json) = parse_add(args)?;
     let terminal = Terminal::default();
     let started = Instant::now();
     let outcome = add(cwd, &options, &terminal).map_err(|err| err.to_string())?;
@@ -165,6 +173,25 @@ fn run_add(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
     } else {
         "copy"
     };
+    if json {
+        let report = outcome.report.as_ref();
+        let value = serde_json::json!({
+            "path": outcome.path,
+            "dryRun": options.dry_run,
+            "method": method,
+            "filesystem": outcome.capability.filesystem,
+            "reusedIndex": outcome.reused_index,
+            "tracked": { "files": summary.tracked_files, "bytes": summary.tracked_bytes },
+            "cached": { "files": summary.cached_files, "bytes": summary.cached_bytes },
+            "reflinked": report.map(|report| report.reflinked),
+            "copied": report.map(|report| report.copied),
+            "failures": report.map_or(0, |report| report.failures.len()),
+            "seconds": started.elapsed().as_secs_f64(),
+            "warnings": outcome.warnings,
+        });
+        println!("{value}");
+        return Ok(ExitCode::SUCCESS);
+    }
     if options.dry_run {
         println!(
             "would clone {} tracked files ({:.1} GiB) and {} cached files ({:.1} GiB) by {method} onto {}",
@@ -217,11 +244,12 @@ fn run_remove(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
         path: String::new(),
         force: 0,
     };
-    let mut wait = false;
+    let (mut wait, mut json) = (false, false);
     for arg in args {
         match arg.as_str() {
             "-f" | "--force" => options.force += 1,
             "--wait" => wait = true,
+            "--json" => json = true,
             flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
             _ if options.path.is_empty() => options.path = arg,
             _ => return Err("remove takes one <worktree>".to_owned()),
@@ -231,6 +259,13 @@ fn run_remove(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
         return Err("remove needs a <worktree>".to_owned());
     }
     let outcome = remove(cwd, &options).map_err(|err| err.to_string())?;
+    if json {
+        let value = serde_json::json!({
+            "path": outcome.path,
+            "deferred": outcome.trash.is_some() && !wait,
+        });
+        println!("{value}");
+    }
     let mut leftovers = sweep_trash(cwd);
     if let Some(trash) = outcome.trash {
         leftovers.retain(|path| path != &trash);
@@ -252,15 +287,58 @@ fn run_remove(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_doctor(cwd: &Path) -> Result<ExitCode, String> {
+fn level_name(level: Level) -> &'static str {
+    match level {
+        Level::Ok => "ok",
+        Level::Info => "info",
+        Level::Warn => "warn",
+    }
+}
+
+fn run_doctor(cwd: &Path, args: &[String]) -> Result<ExitCode, String> {
     let report = diagnose(cwd);
+    if args.iter().any(|arg| arg == "--json") {
+        let checks: Vec<_> = report
+            .checks
+            .iter()
+            .map(|check| {
+                serde_json::json!({
+                    "name": check.name,
+                    "level": level_name(check.level),
+                    "detail": check.detail,
+                })
+            })
+            .collect();
+        let volumes: Vec<_> = report
+            .volumes
+            .iter()
+            .map(|volume| {
+                serde_json::json!({
+                    "root": volume.root,
+                    "filesystem": volume.filesystem,
+                    "reflink": volume.reflink,
+                    "fixed": volume.fixed,
+                    "freeBytes": volume.free,
+                    "totalBytes": volume.total,
+                })
+            })
+            .collect();
+        let value = serde_json::json!({
+            "reflink": report.capability.as_ref().map(|capability| capability.reflink),
+            "devDriveSupported": report.dev_drive_supported,
+            "checks": checks,
+            "volumes": volumes,
+        });
+        println!("{value}");
+        return Ok(ExitCode::SUCCESS);
+    }
     for check in &report.checks {
-        let mark = match check.level {
-            Level::Ok => "ok  ",
-            Level::Info => "info",
-            Level::Warn => "warn",
-        };
-        println!("{mark}  {:<11} {}", check.name, check.detail);
+        println!(
+            "{:<4}  {:<11} {}",
+            level_name(check.level),
+            check.name,
+            check.detail
+        );
     }
     if !report.volumes.is_empty() {
         println!();
@@ -332,11 +410,14 @@ fn run_setup_command(args: Vec<String>) -> Result<ExitCode, String> {
 
 fn run_migrate(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
     let mut destination = None;
+    let mut exclude = Vec::new();
     let (mut dry_run, mut do_switch) = (false, false);
-    for arg in args {
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
         match arg.as_str() {
             "--dry-run" => dry_run = true,
             "--switch" => do_switch = true,
+            "--exclude" => exclude.push(take_value(&mut args, "--exclude")?),
             flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
             _ => destination = Some(PathBuf::from(arg)),
         }
@@ -350,22 +431,17 @@ fn run_migrate(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
         );
         return Ok(ExitCode::SUCCESS);
     }
-    let terminal = Terminal::default();
-    let progress = Arc::new(Progress::default());
-    if !dry_run {
-        terminal.clone_started(0, 0, progress.clone());
-    }
     let outcome = migrate(
         cwd,
         &MigrateOptions {
             destination,
+            exclude,
             dry_run,
             threads: None,
         },
-        Some(progress),
-    );
-    terminal.clone_finished();
-    let outcome = outcome.map_err(|err| err.to_string())?;
+        &Terminal::default(),
+    )
+    .map_err(|err| err.to_string())?;
     if dry_run {
         println!(
             "would copy {} files ({:.1} GiB) to {}",
@@ -402,7 +478,7 @@ fn run() -> Result<ExitCode, String> {
     match subcommand.as_str() {
         "add" => run_add(&cwd, args),
         "remove" => run_remove(&cwd, args),
-        "doctor" => run_doctor(&cwd),
+        "doctor" => run_doctor(&cwd, &args),
         "setup" => run_setup_command(args),
         "migrate" => run_migrate(&cwd, args),
         "__purge" => {

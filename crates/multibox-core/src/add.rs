@@ -238,7 +238,7 @@ pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<
             observer.warn(&format!(
                 "{} editor{who} has {} open; if it writes during the clone the carried cache may need a repair import",
                 project.engine,
-                project.path(".")
+                plan.repo.worktree.join(&project.root).display()
             ));
         }
     }
