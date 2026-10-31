@@ -52,6 +52,7 @@ inside a new VHDX file and `git multibox migrate` moves a project onto it.
 git multibox add [<options>] <path> [<commit-ish>]
 git multibox remove [-f] <worktree>
 git multibox doctor
+git multibox env
 git multibox setup [--vhdx <file>] [--size <GiB>] [--letter <X> | --folder <dir>]
 git multibox migrate <destination> [--exclude <path>]...
 git multibox migrate --switch <destination>
@@ -81,8 +82,8 @@ Adapters recognise engine projects from the tracked files.
 `Library/` is only valid together with the files it was built from, so everything
 in `Assets/`, `Packages/` and `ProjectSettings/` is carried, including ignored
 generated assets. `UserSettings/` and IDE projects come along too. `Temp/`,
-`Logs/`, `obj/`, editor lock files and Multiplayer Play Mode's virtual players
-stay behind.
+`Logs/`, `obj/`, and Multiplayer Play Mode's virtual players stay behind, along
+with everything that identifies the source editor (see below).
 
 Everything else is opt-in through a `.worktreeinclude` file at the repository
 root. It uses gitignore syntax and only applies to ignored files:
@@ -93,6 +94,27 @@ client/Bundles/
 node_modules/
 !client/Bundles/iOS/
 ```
+
+## Working next to an open editor
+
+Your main editor can stay open while worktrees come and go. Multibox is built
+for that, and each of these rules exists because breaking it did real damage in
+testing:
+
+- **A worktree never inherits the source editor's identity.** `Library/` holds
+  live process state. A new editor treats the PID in `ilpp.pid` as its own
+  leftover and kills it, and `Library/Pipeline/` holds the source editor's control
+  port and access token. None of that is carried, so each editor gets its own
+  port, and links into the source tree are repointed at the new worktree.
+- **Asset databases are cloned first.** Artifacts are only ever added, so an older
+  database stays valid against a newer artifact store, but not the other way
+  round. If the database changes during its copy, the copy is retried. You get a
+  warning only if it never settles, and the first launch repairs what it finds.
+- **Tools must be pinned to the worktree.** In a worktree without its own editor,
+  a bare `unity command` falls back to any open editor, which means your main one.
+  `git multibox add` reports the variable that prevents this, and
+  `eval "$(git multibox env)"` sets it. Passing `--project-path` works too.
+- **`remove` refuses while an editor has the worktree open.** `--force` overrides.
 
 ## As a library
 
