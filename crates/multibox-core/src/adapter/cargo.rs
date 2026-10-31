@@ -5,9 +5,12 @@ use std::path::Path;
 const MANIFEST: &str = "Cargo.toml";
 const LOCKFILE: &str = "Cargo.lock";
 
-/// Profiles live in `target/<profile>/`, or in `target/<triple>/<profile>/`
+/// Cargo's default target directory.
+const DEFAULT_TARGET: &str = "target";
+
+/// Profiles live in `<target>/<profile>/`, or in `<target>/<triple>/<profile>/`
 /// when cross-compiling.
-const PROFILES: [&str; 2] = ["target/*", "target/*/*"];
+const PROFILES: [&str; 2] = ["*", "*/*"];
 
 /// What makes a compiled dependency reusable: its outputs, its build script's
 /// results, and the fingerprints Cargo checks to decide it is fresh.
@@ -27,8 +30,63 @@ const UNIT_HASH: &str = "[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f
 /// fingerprints behind makes Cargo rebuild them, and everything depending on
 /// them, as it would in a native worktree.
 ///
-/// Only the default `target/` next to `Cargo.lock` is recognised.
+/// Besides the default `target/`, any directory up to two levels below the
+/// workspace that Cargo has built into is recognised, wherever
+/// `CARGO_TARGET_DIR` or a build script pointed it: Cargo writes
+/// `.rustc_info.json` at the root of every target directory it uses.
 pub struct Cargo;
+
+/// The project's target directories, the default one first.
+fn targets(project: &Project) -> Vec<&str> {
+    if project.cache_dirs.is_empty() {
+        vec![DEFAULT_TARGET]
+    } else {
+        project.cache_dirs.iter().map(String::as_str).collect()
+    }
+}
+
+/// Whether Cargo has used `dir` as a target directory.
+fn is_target_dir(dir: &Path) -> bool {
+    dir.join(".rustc_info.json").is_file()
+        || fs::read_to_string(dir.join("CACHEDIR.TAG"))
+            .is_ok_and(|tag| tag.contains("created by cargo"))
+}
+
+/// Target directories other than the default one, relative to `root`. A
+/// directory holding a `Cargo.toml` is source, possibly another workspace with
+/// its own packages, and is not searched.
+fn other_target_dirs(root: &Path) -> Vec<String> {
+    let subdirs = |dir: &Path| -> Vec<(String, std::path::PathBuf)> {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        entries
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .filter_map(|entry| Some((entry.file_name().into_string().ok()?, entry.path())))
+            .filter(|(name, path)| {
+                ![".git", "node_modules"].contains(&name.as_str()) && !path.join(MANIFEST).exists()
+            })
+            .collect()
+    };
+    let mut found = Vec::new();
+    for (name, path) in subdirs(root) {
+        if name == DEFAULT_TARGET {
+            continue;
+        }
+        if is_target_dir(&path) {
+            found.push(name);
+            continue;
+        }
+        for (inner, inner_path) in subdirs(&path) {
+            if is_target_dir(&inner_path) {
+                found.push(format!("{name}/{inner}"));
+            }
+        }
+    }
+    found.sort();
+    found
+}
 
 impl Adapter for Cargo {
     fn detect(&self, worktree: &Path, tracked: &[&str]) -> Vec<Project> {
@@ -39,39 +97,47 @@ impl Adapter for Cargo {
             .filter_map(|prefix| {
                 // A workspace root has the lockfile; its members do not.
                 let lock = fs::read_to_string(worktree.join(prefix).join(LOCKFILE)).ok()?;
+                let mut targets = vec![DEFAULT_TARGET.to_owned()];
+                targets.extend(other_target_dirs(&worktree.join(prefix)));
                 Some(Project {
                     engine: "cargo",
                     root: prefix.trim_end_matches('/').to_owned(),
                     version: None,
                     local_packages: local_packages(&lock),
                     verified_files: Vec::new(),
+                    cache_dirs: targets,
                 })
             })
             .collect()
     }
 
     fn includes(&self, project: &Project) -> Vec<String> {
-        PROFILES
-            .iter()
-            .flat_map(|profile| {
-                CACHES
-                    .iter()
-                    .map(move |cache| format!("/{}/", project.path(&format!("{profile}/{cache}"))))
-            })
-            .collect()
+        let mut patterns = Vec::new();
+        for target in targets(project) {
+            for profile in PROFILES {
+                for cache in CACHES {
+                    patterns.push(format!(
+                        "/{}/",
+                        project.path(&format!("{target}/{profile}/{cache}"))
+                    ));
+                }
+            }
+        }
+        patterns
     }
 
     fn excludes(&self, project: &Project) -> Vec<String> {
-        let mut patterns = vec![
+        let mut patterns = Vec::new();
+        for target in targets(project) {
             // Only local packages compile incrementally, and the state is
             // tied to their sources. Listed in case all of target/ is asked for.
-            "target/**/incremental/".to_owned(),
+            patterns.push(format!("{target}/**/incremental/"));
             // Scratch space of the source's integration tests.
-            "target/tmp/".to_owned(),
-        ];
-        for name in &project.local_packages {
-            for cache in ["build", ".fingerprint"] {
-                patterns.push(format!("target/**/{cache}/{name}-{UNIT_HASH}/"));
+            patterns.push(format!("{target}/tmp/"));
+            for name in &project.local_packages {
+                for cache in ["build", ".fingerprint"] {
+                    patterns.push(format!("{target}/**/{cache}/{name}-{UNIT_HASH}/"));
+                }
             }
         }
         patterns
@@ -156,6 +222,7 @@ source = "git+https://example.com/forked#abc"
             version: None,
             local_packages: local_packages(LOCK),
             verified_files: Vec::new(),
+            cache_dirs: Vec::new(),
         }
     }
 
@@ -234,6 +301,49 @@ source = "git+https://example.com/forked#abc"
             "target/debug/.fingerprint/shared-macros-0123456789abcdef/lib-shared_macros",
             false
         ));
+    }
+
+    #[test]
+    fn finds_target_directories_wherever_cargo_put_them() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(root.join(LOCKFILE), LOCK).unwrap();
+        for dir in [".tmp/target", "build-out", "fuzz/target", "docs/notes"] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        fs::write(root.join(".tmp/target/.rustc_info.json"), "{}").unwrap();
+        fs::write(
+            root.join("build-out/CACHEDIR.TAG"),
+            "Signature: 8a477f597d28d172789f06886806bc55\n# This file is a cache directory tag created by cargo.\n",
+        )
+        .unwrap();
+        // Another workspace and its own target directory are not this one's.
+        fs::write(root.join("fuzz/Cargo.toml"), "[package]\n").unwrap();
+        fs::write(root.join("fuzz/target/.rustc_info.json"), "{}").unwrap();
+        let found = Cargo.detect(root, &["Cargo.toml"]);
+        assert_eq!(found[0].cache_dirs, ["target", ".tmp/target", "build-out"]);
+    }
+
+    #[test]
+    fn a_custom_target_directory_gets_the_same_rules() {
+        let mut project = project("");
+        project.cache_dirs = vec!["target".to_owned(), ".tmp/target".to_owned()];
+        let rules = rules(&project);
+        assert!(rules.includes(
+            ".tmp/target/debug/deps/libserde-0123456789abcdef.rlib",
+            false
+        ));
+        assert!(!rules.includes(
+            ".tmp/target/debug/.fingerprint/app-0123456789abcdef/lib-app",
+            false
+        ));
+        assert!(!rules.includes(
+            ".tmp/target/debug/incremental/app-1x2y/s-abc/dep-graph.bin",
+            false
+        ));
+        assert!(!rules.includes(".tmp/target/debug/hhh.exe", false));
+        assert!(!rules.includes(".tmp/scratch.log", false));
+        assert!(rules.includes("target/debug/deps/libserde-0123456789abcdef.rlib", false));
     }
 
     #[test]

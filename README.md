@@ -119,8 +119,11 @@ packages compile again, and they always do: `env!("CARGO_MANIFEST_DIR")` bakes
 the source path into them, and Cargo would otherwise call the copies fresh, so
 tests in the new worktree would read and write the original's files. Every
 package without a `source` in `Cargo.lock` counts as the workspace's own, path
-dependencies included. In copy mode `target/` stays behind; add `target/` to
-`.worktreeinclude` to carry it anyway.
+dependencies included. Target directories elsewhere are found too, up to two
+levels below the workspace, by the `.rustc_info.json` Cargo writes into every
+one it uses, so a `CARGO_TARGET_DIR` such as `.tmp/target` is handled the same
+way. In copy mode they stay behind; name them in `.worktreeinclude` to carry
+them anyway.
 
 **pnpm** projects are found by `pnpm-lock.yaml`. pnpm installs from a store
 shared between projects, which leaves a clone little to save, so `node_modules/`

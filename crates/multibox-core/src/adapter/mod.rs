@@ -37,6 +37,9 @@ pub struct Project {
     /// Ignored files the adapter read during detection and found safe to
     /// carry, relative to the worktree root.
     pub verified_files: Vec<String>,
+    /// Cache directories found on disk during detection, relative to the
+    /// project root.
+    pub cache_dirs: Vec<String>,
 }
 
 impl Project {
