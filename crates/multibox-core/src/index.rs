@@ -217,6 +217,23 @@ impl Index {
         Ok(())
     }
 
+    /// The stat data recorded for entry `at`.
+    pub fn stat(&self, at: usize) -> Result<Stat> {
+        let offset = self.entries[at].offset;
+        let field = |index: usize| be32(&self.data, offset + index * 4);
+        Ok(Stat {
+            ctime_sec: field(0)?,
+            ctime_nsec: field(1)?,
+            mtime_sec: field(2)?,
+            mtime_nsec: field(3)?,
+            dev: field(4)?,
+            ino: field(5)?,
+            uid: field(7)?,
+            gid: field(8)?,
+            size: field(9)?,
+        })
+    }
+
     /// Overwrites the stat data of entry `at`.
     pub fn set_stat(&mut self, at: usize, stat: &Stat) {
         let offset = self.entries[at].offset;
@@ -391,6 +408,7 @@ mod tests {
             ..Stat::default()
         };
         index.set_stat(0, &stat);
+        assert_eq!(index.stat(0).unwrap(), stat);
         let reread = Index::parse(index.to_worktree_bytes().unwrap(), 20).unwrap();
         assert_eq!(reread.entries[0].mode, 0o100644);
         assert_eq!(reread.entries[0].size, 100);

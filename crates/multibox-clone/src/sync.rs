@@ -118,6 +118,7 @@ pub fn sync(
 mod tests {
     use super::*;
     use crate::scan::Decision;
+    use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
 
     fn everything(_: &str, _: bool) -> Decision {
@@ -140,6 +141,14 @@ mod tests {
         write(&dst, "edit.txt", "old");
         write(&dst, "gone/stale.txt", "stale");
         fs::copy(src.join("same.txt"), dst.join("same.txt")).unwrap();
+        let set_time = |path: PathBuf, age: u64| {
+            fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(SystemTime::now() - Duration::from_secs(age))
+                .unwrap();
+        };
         let older = SystemTime::now() - Duration::from_secs(60);
         for root in [&src, &dst] {
             fs::OpenOptions::new()
@@ -149,6 +158,7 @@ mod tests {
                 .set_modified(older)
                 .unwrap();
         }
+        set_time(dst.join("edit.txt"), 120);
 
         let report = sync(&src, &dst, &everything, Some(2)).unwrap();
 

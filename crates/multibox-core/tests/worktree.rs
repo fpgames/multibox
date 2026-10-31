@@ -198,6 +198,46 @@ fn source_changes_do_not_leak_into_the_new_worktree() {
 }
 
 #[test]
+fn a_same_size_edit_in_the_source_does_not_leak() {
+    let (_temp, repo) = unity_repo();
+    let edited = repo.join("client/Assets/a.txt");
+    // Older than the index, so git's protection for racy files stays out of it.
+    write(&repo, "client/Assets/a.txt", "COMMITTED A\n");
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&edited)
+        .unwrap()
+        .set_modified(SystemTime::now() - Duration::from_secs(3_600))
+        .unwrap();
+    assert_eq!(status(&repo).trim(), "M client/Assets/a.txt");
+
+    add(&repo, &options("../wt", &["--detach"]), &Silent).unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+    assert_eq!(
+        fs::read_to_string(wt.join("client/Assets/a.txt")).unwrap(),
+        "committed a\n"
+    );
+    assert_eq!(status(&wt), "");
+}
+
+#[test]
+fn init_is_a_no_op_once_the_project_has_moved() {
+    let (_temp, repo) = unity_repo();
+    let destination = repo.parent().unwrap().join("moved");
+    let options = multibox_core::InitOptions {
+        destination: Some(destination.clone()),
+        ..Default::default()
+    };
+    fs::remove_file(repo.join("client/Library/EditorInstance.json")).unwrap();
+    multibox_core::init(&repo, &options, &Silent).unwrap();
+    let again = multibox_core::init(&destination, &options, &Silent);
+    if let Ok(multibox_core::InitOutcome::Switched { .. }) = again {
+        panic!("a second run must not move the project onto itself");
+    }
+    assert!(destination.join("README.md").exists());
+}
+
+#[test]
 fn checks_out_a_different_commit() {
     let (_temp, repo) = unity_repo();
     let first = sh(&repo, &["rev-parse", "HEAD"]);

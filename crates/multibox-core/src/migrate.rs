@@ -379,7 +379,11 @@ fn ensure_area(options: &InitOptions, observer: &dyn Observer) -> Result<PathBuf
 pub fn init(cwd: &Path, options: &InitOptions, observer: &dyn Observer) -> Result<InitOutcome> {
     let repo = main_worktree(cwd)?;
     let capability = probe(&repo.worktree, &repo.worktree)?;
-    if capability.reflink {
+    let already_there = options.destination.as_ref().is_none_or(|path| {
+        fs::canonicalize(path)
+            .is_ok_and(|path| fs::canonicalize(&repo.worktree).is_ok_and(|repo| path == repo))
+    });
+    if capability.reflink && already_there {
         return Ok(InitOutcome::Ready {
             filesystem: capability.filesystem,
         });

@@ -1,6 +1,8 @@
 use crate::adapter;
 use crate::git::{self, Repo};
 use crate::index::Index;
+#[cfg(unix)]
+use crate::index::Stat;
 use crate::plan::{Plan, PlanSummary, build_plan};
 use crate::{Error, Result};
 use multibox_clone::{
@@ -178,37 +180,79 @@ fn resolve_mode(mode: Mode) -> Strategy {
     }
 }
 
+/// The stat data git would compute for this file.
 #[cfg(unix)]
-fn refresh_stat(index: &mut Index, worktree: &Path) {
-    use crate::index::Stat;
+fn stat_of(meta: &fs::Metadata) -> Stat {
     use std::os::unix::fs::MetadataExt;
-    // A clone gets a new inode and ctime, neither of which can be set, so the
-    // cached stat data has to be rewritten to match what git will see.
+    Stat {
+        ctime_sec: meta.ctime() as u32,
+        ctime_nsec: meta.ctime_nsec() as u32,
+        mtime_sec: meta.mtime() as u32,
+        mtime_nsec: meta.mtime_nsec() as u32,
+        dev: meta.dev() as u32,
+        ino: meta.ino() as u32,
+        uid: meta.uid(),
+        gid: meta.gid(),
+        size: meta.size() as u32,
+    }
+}
+
+/// Whether the source file is certainly what the index says it is. Git builds
+/// differ on nanosecond support, so a recorded zero is not a mismatch. A file
+/// no older than the index itself is "racy": its stat data proves nothing.
+#[cfg(unix)]
+fn clean_in_source(recorded: &Stat, actual: &Stat, index_time: (u32, u32)) -> bool {
+    let time_matches = |recorded: (u32, u32), actual: (u32, u32)| {
+        recorded.0 == actual.0 && (recorded.1 == 0 || recorded.1 == actual.1)
+    };
+    recorded.size == actual.size
+        && recorded.ino == actual.ino
+        && time_matches(
+            (recorded.mtime_sec, recorded.mtime_nsec),
+            (actual.mtime_sec, actual.mtime_nsec),
+        )
+        && time_matches(
+            (recorded.ctime_sec, recorded.ctime_nsec),
+            (actual.ctime_sec, actual.ctime_nsec),
+        )
+        && (actual.mtime_sec, actual.mtime_nsec) < index_time
+}
+
+/// A clone gets a new inode and ctime, neither of which can be set, so cached
+/// stat data has to be rewritten to match what git will see in the new worktree.
+///
+/// Only entries that are clean in the source qualify. A file edited there must
+/// keep its stale entry: rewriting it would tell git the clone's content is
+/// what the index records, and the edit would survive `reset --hard` unseen.
+#[cfg(unix)]
+fn refresh_stat(index: &mut Index, source: &Path, index_path: &Path, worktree: &Path) {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(index_meta) = fs::metadata(index_path) else {
+        return;
+    };
+    let index_time = (index_meta.mtime() as u32, index_meta.mtime_nsec() as u32);
     for at in 0..index.entries.len() {
-        let Ok(meta) = fs::symlink_metadata(worktree.join(&index.entries[at].path)) else {
+        let path = &index.entries[at].path;
+        let (Ok(original), Ok(clone)) = (
+            fs::symlink_metadata(source.join(path)),
+            fs::symlink_metadata(worktree.join(path)),
+        ) else {
             continue;
         };
-        index.set_stat(
-            at,
-            &Stat {
-                ctime_sec: meta.ctime() as u32,
-                ctime_nsec: meta.ctime_nsec() as u32,
-                mtime_sec: meta.mtime() as u32,
-                mtime_nsec: meta.mtime_nsec() as u32,
-                dev: meta.dev() as u32,
-                ino: meta.ino() as u32,
-                uid: meta.uid(),
-                gid: meta.gid(),
-                size: meta.size() as u32,
-            },
-        );
+        let Ok(recorded) = index.stat(at) else {
+            continue;
+        };
+        if clean_in_source(&recorded, &stat_of(&original), index_time) {
+            index.set_stat(at, &stat_of(&clone));
+        }
     }
 }
 
 #[cfg(windows)]
-fn refresh_stat(_index: &mut Index, _worktree: &Path) {
+fn refresh_stat(_index: &mut Index, _source: &Path, _index_path: &Path, _worktree: &Path) {
     // Git for Windows stores zero for ino, dev, uid and gid, and the creation
-    // time as ctime. Both timestamps survive a clone, so the entries still match.
+    // time as ctime. Both timestamps survive a clone, so the entries still match,
+    // and a file edited in the source still mismatches, as it should.
 }
 
 /// Installs the source index in the new worktree, then makes the worktree an
@@ -219,7 +263,12 @@ fn finish_checkout(plan: &mut Plan, new: &Repo) -> Result<()> {
         .index
         .as_mut()
         .ok_or_else(|| Error::new("no index to install"))?;
-    refresh_stat(index, &new.worktree);
+    refresh_stat(
+        index,
+        &plan.repo.worktree,
+        &plan.repo.index_path(),
+        &new.worktree,
+    );
     fs::write(new.index_path(), index.to_worktree_bytes()?)?;
     git::quiet(&new.worktree, &["reset", "--hard", "--quiet"])
 }
@@ -407,5 +456,49 @@ pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<
             rollback(cwd, &target, observer);
             Err(err)
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    fn stat(mtime: (u32, u32), size: u32) -> Stat {
+        Stat {
+            mtime_sec: mtime.0,
+            mtime_nsec: mtime.1,
+            ctime_sec: mtime.0,
+            ctime_nsec: mtime.1,
+            ino: 7,
+            size,
+            ..Stat::default()
+        }
+    }
+
+    #[test]
+    fn an_unchanged_older_file_is_clean() {
+        let recorded = stat((100, 5), 10);
+        assert!(clean_in_source(&recorded, &stat((100, 5), 10), (200, 0)));
+    }
+
+    #[test]
+    fn a_zero_recorded_nanosecond_is_not_a_mismatch() {
+        let recorded = stat((100, 0), 10);
+        assert!(clean_in_source(&recorded, &stat((100, 5), 10), (200, 0)));
+    }
+
+    #[test]
+    fn any_difference_means_dirty() {
+        let recorded = stat((100, 5), 10);
+        assert!(!clean_in_source(&recorded, &stat((100, 6), 10), (200, 0)));
+        assert!(!clean_in_source(&recorded, &stat((101, 5), 10), (200, 0)));
+        assert!(!clean_in_source(&recorded, &stat((100, 5), 11), (200, 0)));
+    }
+
+    #[test]
+    fn a_file_as_new_as_the_index_proves_nothing() {
+        let recorded = stat((100, 5), 10);
+        assert!(!clean_in_source(&recorded, &stat((100, 5), 10), (100, 5)));
+        assert!(!clean_in_source(&recorded, &stat((100, 5), 10), (100, 4)));
     }
 }
