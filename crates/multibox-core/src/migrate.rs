@@ -496,11 +496,11 @@ pub fn init(cwd: &Path, options: &InitOptions, observer: &dyn Observer) -> Resul
             })?,
             None => root.unwrap_or_default().join(&name),
         };
-        let planned = copy(&destination, true)?;
+        let planned = selection(&repo, &options.exclude, None)?;
         return Ok(InitOutcome::Planned {
             destination,
             creates_area,
-            files: planned.files,
+            files: planned.files.len() as u64,
             bytes: planned.bytes,
         });
     }
