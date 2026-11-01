@@ -35,6 +35,9 @@ pub struct Config {
     /// Ignored paths never to carry, whatever asked for them.
     pub exclude: Vec<String>,
     pub large_caches: LargeCaches,
+    /// Hard-link write-once caches to the source where the filesystem cannot
+    /// clone, instead of copying them.
+    pub share_write_once: bool,
     /// Engines whose adapter is turned off.
     pub disabled_engines: Vec<&'static str>,
     /// Passed to `git merge` by `finish`, after the engines' own.
@@ -53,6 +56,7 @@ impl Default for Config {
             include: Vec::new(),
             exclude: Vec::new(),
             large_caches: LargeCaches::Auto,
+            share_write_once: true,
             disabled_engines: Vec::new(),
             merge_options: Vec::new(),
             keep_branch: false,
@@ -141,6 +145,9 @@ impl Config {
             LargeCaches::Auto => {}
             LargeCaches::Always => parts.push("large caches copied where not shared".to_owned()),
             LargeCaches::Never => parts.push("large caches never carried".to_owned()),
+        }
+        if !self.share_write_once {
+            parts.push("write-once caches copied, not shared".to_owned());
         }
         if !self.disabled_engines.is_empty() {
             parts.push(format!("engines off: {}", self.disabled_engines.join(", ")));
@@ -238,6 +245,10 @@ impl Config {
                     "\"auto\", \"always\" or \"never\"",
                     other,
                 ),
+                ("share-write-once", Value::Boolean(share)) => self.share_write_once = *share,
+                ("share-write-once", other) => {
+                    self.wrong_type("carry.share-write-once", "true or false", other);
+                }
                 _ => self.unknown(&format!("carry.{key}")),
             }
         }
@@ -303,6 +314,7 @@ mod tests {
             include = ["/bin/*/*/", ".env.local"]
             exclude = ["!/Library/Search/"]
             large-caches = "always"
+            share-write-once = false
             [engines]
             pnpm = false
             unity = true
@@ -315,6 +327,7 @@ mod tests {
         assert_eq!(config.include, ["/bin/*/*/", ".env.local"]);
         assert_eq!(config.exclude, ["/Library/Search/"]);
         assert_eq!(config.large_caches, LargeCaches::Always);
+        assert!(!config.share_write_once);
         assert!(!config.engine_enabled("pnpm"));
         assert!(config.engine_enabled("unity"));
         assert_eq!(config.merge_options, ["--no-ff"]);

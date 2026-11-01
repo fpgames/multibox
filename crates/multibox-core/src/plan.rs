@@ -32,6 +32,9 @@ pub struct PlanSummary {
     pub tracked_bytes: u64,
     pub cached_files: u64,
     pub cached_bytes: u64,
+    /// Cached files hard-linked to the source rather than copied.
+    pub shared_files: u64,
+    pub shared_bytes: u64,
 }
 
 /// Top-level ignored entries of `worktree`. `--directory` stops git at the
@@ -65,11 +68,13 @@ fn read_index(repo: &Repo) -> (Option<Index>, Option<String>) {
 
 /// Lists every file a new worktree should get from `source`, without writing.
 /// With `carry` off, only tracked files are selected. `frugal` skips caches
-/// that are only worth carrying when cloning is free.
+/// that are only worth carrying when cloning is free. `share` marks the
+/// carried files adapters know to be written once, for a hard link.
 pub fn build_plan(
     source: &Path,
     carry: bool,
     frugal: bool,
+    share: bool,
     threads: Option<usize>,
 ) -> Result<Plan> {
     let repo = Repo::discover(source)?;
@@ -92,7 +97,7 @@ pub fn build_plan(
     };
     let config = Config::load(&repo.worktree);
     let projects = adapter::detect_enabled(&repo.worktree, &tracked, &config);
-    let rules = Rules::load(&repo.worktree, &projects, frugal, &config)?;
+    let rules = Rules::load(&repo.worktree, &projects, frugal, share, &config)?;
     let local_config = config.found && !tracked.contains(&CONFIG_FILE);
 
     let mut files = Vec::new();
@@ -143,7 +148,7 @@ pub fn build_plan(
     // Outermost first, so a report names the one a user would recognise.
     refused.sort_by_key(|dir| (dir.matches('/').count(), dir.clone()));
 
-    let manifest = scan(
+    let mut manifest = scan(
         &repo.worktree,
         &ScanRequest {
             files,
@@ -155,12 +160,27 @@ pub fn build_plan(
     )
     .map_err(|err| Error::new(format!("cannot scan {}: {err}", repo.worktree.display())))?;
 
+    // Tracked files are edited, so only caches are ever shared.
+    let (mut shared_files, mut shared_bytes) = (0, 0);
+    if share {
+        let tracked: HashSet<&str> = tracked.iter().copied().collect();
+        for file in &mut manifest.files {
+            if !tracked.contains(file.rel.as_str()) && rules.shares(&file.rel) {
+                file.shared = true;
+                shared_files += 1;
+                shared_bytes += file.size;
+            }
+        }
+    }
+
     let cached_files = (manifest.files.len() as u64).saturating_sub(tracked_files);
     let summary = PlanSummary {
         tracked_files,
         tracked_bytes,
         cached_files,
         cached_bytes: manifest.bytes.saturating_sub(tracked_bytes),
+        shared_files,
+        shared_bytes,
     };
     Ok(Plan {
         repo,

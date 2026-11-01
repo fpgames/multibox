@@ -212,8 +212,10 @@ fn run_add(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
             "reusedIndex": outcome.reused_index,
             "tracked": { "files": summary.tracked_files, "bytes": summary.tracked_bytes },
             "cached": { "files": summary.cached_files, "bytes": summary.cached_bytes },
+            "shared": { "files": summary.shared_files, "bytes": summary.shared_bytes },
             "reflinked": report.map(|report| report.reflinked),
             "copied": report.map(|report| report.copied),
+            "hardLinked": report.map(|report| report.hard_linked),
             "failures": report.map_or(0, |report| report.failures.len()),
             "seconds": started.elapsed().as_secs_f64(),
             "warnings": outcome.warnings,
@@ -228,9 +230,18 @@ fn run_add(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
         }
         return Ok(ExitCode::SUCCESS);
     }
+    let sharing = if summary.shared_files > 0 {
+        format!(
+            "; {} cached files ({:.1} GiB) shared with the source through hard links",
+            summary.shared_files,
+            gib(summary.shared_bytes)
+        )
+    } else {
+        String::new()
+    };
     if options.dry_run {
         println!(
-            "would clone {} tracked files ({:.1} GiB) and {} cached files ({:.1} GiB) by {method} onto {}",
+            "would clone {} tracked files ({:.1} GiB) and {} cached files ({:.1} GiB) by {method} onto {}{sharing}",
             summary.tracked_files,
             gib(summary.tracked_bytes),
             summary.cached_files,
@@ -240,7 +251,7 @@ fn run_add(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
     println!(
-        "{}: {} files ({:.1} GiB) by {method} on {} in {:.1}s",
+        "{}: {} files ({:.1} GiB) by {method} on {} in {:.1}s{sharing}",
         outcome.path.display(),
         summary.tracked_files + summary.cached_files,
         gib(summary.tracked_bytes + summary.cached_bytes),
@@ -256,7 +267,7 @@ fn run_add(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
     if !outcome.capability.reflink && outcome.capability.same_volume && options.mode == Mode::Auto {
         terminal.note(&format!(
             "copy mode used {:.1} GiB. `git multibox setup` enables reflinks: new worktrees then take seconds and almost no space.",
-            gib(summary.tracked_bytes + summary.cached_bytes)
+            gib(summary.tracked_bytes + summary.cached_bytes - summary.shared_bytes)
         ));
     }
     Ok(ExitCode::SUCCESS)

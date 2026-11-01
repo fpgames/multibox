@@ -164,7 +164,8 @@ fn check_free_space(plan: &Plan, target: &Path, capability: &Capability) -> Resu
         return Ok(());
     }
     let free = free_space(target)?;
-    let needed = plan.manifest.bytes + FREE_SPACE_MARGIN;
+    // Hard links take no space for their data.
+    let needed = plan.manifest.bytes - plan.summary.shared_bytes + FREE_SPACE_MARGIN;
     if needed > free {
         return Err(Error::new(format!(
             "not enough space on the target volume: need {}, {} free",
@@ -545,7 +546,13 @@ pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<
     }
     let strategy = resolve_mode(options.mode);
     let frugal = !capability.reflink || strategy == Strategy::Copy;
-    let mut plan = build_plan(&source, options.carry, frugal, options.threads)?;
+    // Where clones are free there is nothing to gain from sharing a file, and
+    // --copy asks for independent copies.
+    let share = options.mode == Mode::Auto
+        && !capability.reflink
+        && capability.same_volume
+        && config.share_write_once;
+    let mut plan = build_plan(&source, options.carry, frugal, share, options.threads)?;
     if strategy == Strategy::Reflink && !capability.reflink {
         return Err(Error::new(format!(
             "reflinks are unavailable here ({}, same volume: {}); run `git multibox doctor`",

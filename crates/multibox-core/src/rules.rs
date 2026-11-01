@@ -22,6 +22,8 @@ pub struct Rules {
     refused: Gitignore,
     /// Verified files carried even inside a refused tree.
     exempt: Vec<String>,
+    /// Carried files to hard-link rather than copy.
+    shared: Gitignore,
     literal_prefixes: Vec<String>,
     matches_anywhere: bool,
 }
@@ -74,6 +76,7 @@ impl Rules {
             matcher: build(&kept)?,
             refused: build(refused)?,
             exempt: exempt.to_vec(),
+            shared: build(&[])?,
             literal_prefixes,
             matches_anywhere,
         })
@@ -83,11 +86,14 @@ impl Rules {
     /// file at the root of `worktree`, if there is one, and the patterns of
     /// `config`. With `frugal` set, as in copy mode, caches that cost real disk
     /// space are left out too; `config` can change that default. Explicit
-    /// patterns still bring any of them back.
+    /// patterns still bring any of them back. With `share` set, files the
+    /// adapters know to be written once are hard-linked instead of copied,
+    /// which makes some large caches cheap enough to carry anyway.
     pub fn load(
         worktree: &Path,
         projects: &[Project],
         frugal: bool,
+        share: bool,
         config: &Config,
     ) -> Result<Rules> {
         let includes: Vec<String> = projects.iter().flat_map(adapter::includes).collect();
@@ -96,8 +102,13 @@ impl Rules {
             LargeCaches::Always => false,
             LargeCaches::Never => true,
         };
+        // "never" means never, however cheap sharing would make a cache.
+        let cheap_when_shared = share && config.large_caches == LargeCaches::Auto;
         let expensive: Vec<String> = if skip_expensive {
-            projects.iter().flat_map(adapter::expensive).collect()
+            projects
+                .iter()
+                .flat_map(|project| adapter::expensive(project, cheap_when_shared))
+                .collect()
         } else {
             Vec::new()
         };
@@ -138,7 +149,19 @@ impl Rules {
             .iter()
             .flat_map(|project| project.verified_files.iter().cloned())
             .collect();
-        Rules::with_refusals(&lines, &refused, &exempt)
+        let mut rules = Rules::with_refusals(&lines, &refused, &exempt)?;
+        if share {
+            let shared: Vec<String> = projects.iter().flat_map(adapter::write_once).collect();
+            rules.shared = build(&shared)?;
+        }
+        Ok(rules)
+    }
+
+    /// Whether a carried file is written once, so it can be hard-linked.
+    pub fn shares(&self, rel: &str) -> bool {
+        self.shared
+            .matched_path_or_any_parents(rel, false)
+            .is_ignore()
     }
 
     fn matched(&self, rel: &str, is_dir: bool) -> Match<()> {

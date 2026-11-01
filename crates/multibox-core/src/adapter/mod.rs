@@ -71,7 +71,17 @@ pub trait Adapter: Sync {
     fn excludes(&self, project: &Project) -> Vec<String>;
     /// Large caches that are worth carrying only when cloning them is free.
     /// Left behind in copy mode, where each one costs real disk space.
-    fn expensive(&self, _project: &Project) -> Vec<String> {
+    /// `sharing` says whether [`Adapter::write_once`] files will be hard-linked
+    /// instead of copied, which can make a cache cheap after all.
+    fn expensive(&self, _project: &Project, _sharing: bool) -> Vec<String> {
+        Vec::new()
+    }
+    /// Ignored files written once and never changed in place: a new version
+    /// gets a new file. Where the filesystem cannot clone, a worktree on the
+    /// same volume shares them with its source through hard links instead of
+    /// copying them. Only list files observed to behave so, because a tool
+    /// that rewrote one in place would change the source's copy too.
+    fn write_once(&self, _project: &Project) -> Vec<String> {
         Vec::new()
     }
     /// Caches whose own tool restores them faster than a copy could carry them.
@@ -143,8 +153,12 @@ pub fn excludes(project: &Project) -> Vec<String> {
     adapter_for(project).map_or_else(Vec::new, |adapter| adapter.excludes(project))
 }
 
-pub fn expensive(project: &Project) -> Vec<String> {
-    adapter_for(project).map_or_else(Vec::new, |adapter| adapter.expensive(project))
+pub fn expensive(project: &Project, sharing: bool) -> Vec<String> {
+    adapter_for(project).map_or_else(Vec::new, |adapter| adapter.expensive(project, sharing))
+}
+
+pub fn write_once(project: &Project) -> Vec<String> {
+    adapter_for(project).map_or_else(Vec::new, |adapter| adapter.write_once(project))
 }
 
 pub fn reflink_only(project: &Project) -> Vec<String> {

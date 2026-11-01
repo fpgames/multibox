@@ -47,6 +47,9 @@ pub struct Report {
     pub bytes: u64,
     pub reflinked: u64,
     pub copied: u64,
+    /// Shared files hard-linked to the source, and their size.
+    pub hard_linked: u64,
+    pub hard_linked_bytes: u64,
     /// Files where a reflink was attempted and refused, then copied instead.
     pub fallbacks: u64,
     /// Source files that disappeared between the scan and the clone.
@@ -161,6 +164,8 @@ fn clone_link(src: &Path, dst: &Path, src_root: &Path, dst_root: &Path) -> io::R
 struct Tally {
     reflinked: u64,
     copied: u64,
+    hard_linked: u64,
+    hard_linked_bytes: u64,
     fallbacks: u64,
     vanished: u64,
     failures: Vec<Failure>,
@@ -211,6 +216,26 @@ pub fn execute(
         |tally, file| {
             let from = join(&src, &file.rel);
             let to = join(&dst, &file.rel);
+            // A link only works within a volume. Any other refusal, such as the
+            // filesystem's limit on links per file, falls back to a clone.
+            if file.shared && capability.same_volume {
+                match fs::hard_link(&from, &to) {
+                    Ok(()) => {
+                        tally.hard_linked += 1;
+                        tally.hard_linked_bytes += file.size;
+                        if let Some(progress) = options.progress {
+                            progress.files.fetch_add(1, Ordering::Relaxed);
+                            progress.bytes.fetch_add(file.size, Ordering::Relaxed);
+                        }
+                        return;
+                    }
+                    Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                        tally.vanished += 1;
+                        return;
+                    }
+                    Err(_) => {}
+                }
+            }
             match sys::clone_file(&from, &to, &capability) {
                 Ok(Outcome::Reflinked) => tally.reflinked += 1,
                 Ok(Outcome::Copied) => tally.copied += 1,
@@ -240,6 +265,8 @@ pub fn execute(
     for tally in tallies {
         report.reflinked += tally.reflinked;
         report.copied += tally.copied;
+        report.hard_linked += tally.hard_linked;
+        report.hard_linked_bytes += tally.hard_linked_bytes;
         report.fallbacks += tally.fallbacks;
         report.vanished += tally.vanished;
         report.failures.extend(tally.failures);

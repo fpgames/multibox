@@ -46,6 +46,9 @@ pub struct FileEntry {
     pub size: u64,
     /// Known for files found on disk; absent for ones the caller listed.
     pub modified: Option<SystemTime>,
+    /// Written once and never changed in place, so [`crate::execute`] may
+    /// hard-link it to the source instead of copying it. Callers set this.
+    pub shared: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -174,6 +177,7 @@ fn walk_dir(
                 rel: child,
                 size: meta.len(),
                 modified: meta.modified().ok(),
+                shared: false,
             });
         }
     }
@@ -262,6 +266,7 @@ pub fn scan(src_root: &Path, req: &ScanRequest<'_>) -> io::Result<Manifest> {
             rel: rel.clone(),
             size: *size,
             modified: None,
+            shared: false,
         }));
     for rel in &req.links {
         match fs::symlink_metadata(join(&root, rel)) {
@@ -273,6 +278,7 @@ pub fn scan(src_root: &Path, req: &ScanRequest<'_>) -> io::Result<Manifest> {
                 rel: rel.clone(),
                 size: meta.len(),
                 modified: meta.modified().ok(),
+                shared: false,
             }),
             Err(_) => {}
         }

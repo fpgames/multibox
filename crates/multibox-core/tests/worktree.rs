@@ -1315,6 +1315,84 @@ fn git_errors_do_not_repeat_fatal() {
     assert!(err.to_string().starts_with("not a git repository"), "{err}");
 }
 
+#[test]
+fn write_once_caches_are_hard_linked_where_files_cannot_be_cloned() {
+    let (_temp, repo) = unity_repo();
+    let outcome = add(&repo, &options("../wt", &["--detach"]), &Silent).unwrap();
+    let report = outcome.report.as_ref().unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+    let artifact = "client/Library/Artifacts/ab/abcd";
+    assert_eq!(fs::read_to_string(wt.join(artifact)).unwrap(), "imported\n");
+    if outcome.capability.reflink {
+        // Clones are free and independent: nothing to share.
+        assert_eq!(report.hard_linked, 0);
+        assert_eq!(outcome.summary.shared_files, 0);
+    } else {
+        // Only the import result; tracked files and databases are copied.
+        assert_eq!(outcome.summary.shared_files, 1);
+        assert_eq!(report.hard_linked, 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(fs::metadata(wt.join(artifact)).unwrap().nlink(), 2);
+        }
+    }
+    assert_eq!(status(&wt), "");
+
+    // Removing the worktree removes its links, not the source's files.
+    let removal = remove(&repo, &removal("../wt", 0)).unwrap();
+    if let Some(trash) = removal.trash {
+        purge_trash(&trash).unwrap();
+    }
+    assert_eq!(
+        fs::read_to_string(repo.join(artifact)).unwrap(),
+        "imported\n"
+    );
+}
+
+#[test]
+fn copy_mode_and_the_config_switch_turn_sharing_off() {
+    let (_temp, repo) = unity_repo();
+    let mut request = options("../wt", &["--detach"]);
+    request.mode = Mode::Copy;
+    let outcome = add(&repo, &request, &Silent).unwrap();
+    assert_eq!(outcome.report.unwrap().hard_linked, 0);
+
+    local_config(&repo, "[carry]\nshare-write-once = false\n");
+    let outcome = add(&repo, &options("../wt2", &["--detach"]), &Silent).unwrap();
+    assert_eq!(outcome.report.unwrap().hard_linked, 0);
+    assert!(
+        repo.parent()
+            .unwrap()
+            .join("wt2/client/Library/Artifacts/ab/abcd")
+            .exists()
+    );
+}
+
+#[test]
+fn a_shared_target_is_carried_by_default_even_where_files_are_copied() {
+    let (_temp, repo) = cargo_repo();
+    let outcome = add(&repo, &options("../wt", &["--detach"]), &Silent).unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+    assert!(
+        wt.join("target/debug/deps/libserde-0123456789abcdef.rlib")
+            .exists()
+    );
+    assert!(
+        wt.join("target/debug/.fingerprint/serde-0123456789abcdef/lib-serde")
+            .exists()
+    );
+    // The project's own units still stay behind.
+    assert!(
+        !wt.join("target/debug/deps/libapp-1111111111111111.rlib")
+            .exists()
+    );
+    if !outcome.capability.reflink {
+        // The library is shared; its fingerprint and dep-info are copied.
+        assert_eq!(outcome.report.unwrap().hard_linked, 1);
+    }
+}
+
 /// Writes a `.multibox.toml` kept out of git, as a developer would for
 /// settings of their own.
 fn local_config(repo: &Path, text: &str) {

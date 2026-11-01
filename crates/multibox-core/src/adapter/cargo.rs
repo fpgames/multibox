@@ -155,9 +155,35 @@ impl Adapter for Cargo {
     }
 
     /// A copy of `target/` can be as large as the project several times over.
+    /// Shared, its bulk costs nothing: once the project's own units stay
+    /// behind, most of what is left is libraries written once. Otherwise
     /// `.worktreeinclude` can still ask for it with `target/`.
-    fn expensive(&self, project: &Project) -> Vec<String> {
-        self.includes(project)
+    fn expensive(&self, project: &Project, sharing: bool) -> Vec<String> {
+        if sharing {
+            Vec::new()
+        } else {
+            self.includes(project)
+        }
+    }
+
+    /// Compiled libraries and their metadata of dependencies. rustc writes a
+    /// new file and renames it into place, and a dependency's unit hash
+    /// changes with anything that changes its output. In a target directory
+    /// used for months, no dependency's library was modified after it was
+    /// created; the project's own units, which were, stay behind.
+    fn write_once(&self, project: &Project) -> Vec<String> {
+        let mut patterns = Vec::new();
+        for target in targets(project) {
+            for profile in PROFILES {
+                for extension in ["rlib", "rmeta"] {
+                    patterns.push(format!(
+                        "/{}",
+                        project.path(&format!("{target}/{profile}/deps/*.{extension}"))
+                    ));
+                }
+            }
+        }
+        patterns
     }
 }
 
