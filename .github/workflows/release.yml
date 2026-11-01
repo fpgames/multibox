@@ -48,7 +48,10 @@ jobs:
             name="git-multibox-$GITHUB_REF_NAME-$target"
             mkdir -p "dist/$name"
             cp "target/$target/release/git-multibox" README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
-            tar -C dist -czf "dist/$name.tar.gz" "$name"
+            # Without these, macOS metadata travels as ._ files and xattr
+            # headers that other systems unpack as clutter.
+            COPYFILE_DISABLE=1 /usr/bin/tar --no-xattrs --no-mac-metadata \
+              -C dist -czf "dist/$name.tar.gz" "$name"
           done
       - uses: actions/upload-artifact@v4
         with:
