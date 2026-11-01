@@ -341,7 +341,7 @@ source = "git+https://example.com/forked#abc"
             ".tmp/target/debug/incremental/app-1x2y/s-abc/dep-graph.bin",
             false
         ));
-        assert!(!rules.includes(".tmp/target/debug/hhh.exe", false));
+        assert!(!rules.includes(".tmp/target/debug/app.exe", false));
         assert!(!rules.includes(".tmp/scratch.log", false));
         assert!(rules.includes("target/debug/deps/libserde-0123456789abcdef.rlib", false));
     }

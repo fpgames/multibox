@@ -217,9 +217,8 @@ incremental type check, development build until the UI responds, installer.
 `node_modules/` are too long for it. In copy mode the Rust helpers' `target/`
 stays behind by default, which is why the installer saves nothing on NTFS.
 
-**hhh**, a Rust workspace of 970 packages, 23 of them local, built through its
-own `scripts/task-run.py` into `.tmp/target`: create, then
-`cargo test --no-run`.
+**A Rust workspace** of 970 packages, 23 of them local, built through its own
+script into `.tmp/target`: create, then `cargo test --no-run`.
 
 | | NTFS native | NTFS Multibox | NTFS, `.tmp/target/` in `.worktreeinclude` | Dev Drive native | Dev Drive Multibox |
 | --- | --- | --- | --- | --- | --- |
@@ -235,8 +234,8 @@ panic locations of code cranelift generates into its `OUT_DIR` and includes.
 They name files, nothing opens them; a native build names its own target
 directory there instead.
 
-**flash-party-retro**, Unity 6 with 104,330 tracked files, the main editor open
-on the Dev Drive copy throughout: create, then the first batch-mode launch.
+**A Unity 6 game** with 104,330 tracked files, the main editor open on the Dev
+Drive copy throughout: create, then the first batch-mode launch.
 
 | | NTFS native | NTFS Multibox | Dev Drive native | Dev Drive Multibox |
 | --- | --- | --- | --- | --- |
