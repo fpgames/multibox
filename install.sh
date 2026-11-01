@@ -34,8 +34,11 @@ base="https://github.com/$repo/releases/download/$version"
 
 temp=$(mktemp -d)
 trap 'rm -rf "$temp"' EXIT
-curl -fsSL -o "$temp/$name.tar.gz" "$base/$name.tar.gz"
-curl -fsSL -o "$temp/SHA256SUMS" "$base/SHA256SUMS"
+if ! curl -fsSL -o "$temp/$name.tar.gz" "$base/$name.tar.gz" ||
+    ! curl -fsSL -o "$temp/SHA256SUMS" "$base/SHA256SUMS"; then
+    echo "Could not download $name.tar.gz from $base. Is $version a release of $repo?" >&2
+    exit 1
+fi
 if ! (cd "$temp" && grep "  $name.tar.gz\$" SHA256SUMS | shasum -a 256 -c - >/dev/null 2>&1); then
     echo "$name.tar.gz does not match SHA256SUMS; nothing was installed." >&2
     exit 1
