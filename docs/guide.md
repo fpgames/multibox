@@ -28,7 +28,7 @@ checkout and still carries the caches.
 | --- | --- | --- |
 | APFS, Btrfs, XFS | reflink | Shares data; only changed files take space |
 | ReFS / Dev Drive | reflink | Shares data; only changed files take space |
-| NTFS, ext4 | copy | A full copy, still without a reimport |
+| NTFS, ext4 | copy | A copy, except write-once caches, which are hard-linked |
 
 Copy mode needs no setup. To get reflinks on Windows, run `git multibox init`.
 It creates a Dev Drive inside a new VHDX file, without touching any existing
@@ -44,6 +44,21 @@ like: it does whatever is left. On macOS it has nothing to do.
 A worktree only shares data with its source on the same volume. Created on
 another one, it is a full copy, and `add` says so.
 
+### Write-once caches
+
+Some caches are never changed once written: a new version is a new file.
+Unity's import results are named after their content and moved into place,
+and rustc writes a dependency's library and metadata to a new file that
+replaces the old one. Where files are copied, a worktree on the same volume
+hard-links these instead: the worktree and its source then point at the same
+data, which costs neither time nor space. Anything that rewrites such a file
+replaces it, so the other side keeps its own.
+
+A file type is listed only after it was seen to behave so in real projects; the
+evidence is in [benchmarks.md](benchmarks.md). Where reflinks exist there is
+nothing to gain, and `--copy` asks for independent copies, so neither shares
+anything. `share-write-once = false` in `.multibox.toml` turns it off.
+
 ## Never worse than `git worktree`
 
 Multibox only adds to what a native worktree gets, and only where that pays
@@ -58,10 +73,11 @@ off. The measurements behind these rules are in
 - **Nothing an adapter carries reaches back into the source.** Links into the
   source tree follow the clone, files that record the project's path are
   rewritten, and build output compiled from the project's own sources is rebuilt.
-- **Copy mode is frugal.** Without reflinks every carried byte costs disk space,
-  so large caches stay behind unless `.worktreeinclude` or `.multibox.toml`
-  asks for them. Caches a reinstall restores faster stay behind even then, with
-  a warning.
+  Hard-linked files are only those their tools never change in place.
+- **Copy mode is frugal.** Without reflinks every copied byte costs disk space,
+  so large caches stay behind unless sharing makes them cheap, or
+  `.worktreeinclude` or `.multibox.toml` asks for them. Caches a reinstall
+  restores faster stay behind even then, with a warning.
 
 ## Commands
 
@@ -136,20 +152,27 @@ generated assets. `UserSettings/` and IDE projects come along too. `Temp/`,
 with everything that identifies the source editor (see below). In copy mode
 `Library/BuildCache/` and the search index in `Library/Search/` stay behind
 too: only player builds read the first, and the editor rebuilds the second in
-the background.
+the background. The import results in `Library/Artifacts/`, most of the
+`Library/`, are written once and hard-linked where files are copied.
 
 **Rust** workspaces are found by a tracked `Cargo.toml` with `Cargo.lock` beside
 it. Compiled dependencies in `target/` come along: `deps/`, `build/` and
 `.fingerprint/` of every profile and target triple. Only the workspace's own
 packages compile again, and they always do: `env!("CARGO_MANIFEST_DIR")` bakes
 the source path into them, and Cargo would otherwise call the copies fresh, so
-tests in the new worktree would read and write the original's files. Every
-package without a `source` in `Cargo.lock` counts as the workspace's own, path
-dependencies included. Target directories elsewhere are found too, up to two
-levels below the workspace, by the `.rustc_info.json` Cargo writes into every
-one it uses, so a `CARGO_TARGET_DIR` such as `.tmp/target` is handled the same
-way. In copy mode they stay behind; name them in `.worktreeinclude` to carry
-them anyway.
+tests in the new worktree would read and write the original's files. None of
+their outputs is carried, since the rebuild would only overwrite them. A unit is
+the workspace's own when the dep-info file rustc writes beside it names a
+source in the repository: Cargo hands rustc a member's sources relative to the
+workspace and everything else's as absolute paths. That also finds tests and
+binaries named after their files. Every package without a `source` in
+`Cargo.lock` counts as the workspace's own too, path dependencies included.
+Target directories elsewhere are found too, up to two levels below the
+workspace, by the `.rustc_info.json` Cargo writes into every one it uses, so a
+`CARGO_TARGET_DIR` such as `.tmp/target` is handled the same way. Where files
+are copied, the dependencies' libraries and metadata are hard-linked, so
+`target/` is carried there too; across volumes, or with sharing turned off, it
+stays behind unless `.worktreeinclude` names it.
 
 **pnpm** projects are found by `pnpm-lock.yaml`. pnpm installs from a store
 shared between projects, which leaves a clone little to save, so `node_modules/`
@@ -196,8 +219,9 @@ enabled = true          # false: `git multibox add` is a plain `git worktree add
 include = []            # more ignored paths to carry, as in .worktreeinclude
 exclude = []            # ignored paths never to carry, whatever asks for them
 large-caches = "auto"   # Rust's target/, Unity's BuildCache and search index:
-                        # "auto" carries them where the filesystem shares them,
+                        # "auto" carries them where they cost little,
                         # "always" copies them on NTFS and ext4 too, "never" leaves them
+share-write-once = true # hard-link write-once caches where files are copied
 
 [engines]               # false turns an adapter off
 unity = true
@@ -214,10 +238,10 @@ The patterns come after the adapters' and those of `.worktreeinclude`, so they
 have the last word, except over the refusals described above: `node_modules/`
 is never copied, whatever asks for it. Command-line options win over the file.
 
-`large-caches = "always"` trades disk for time. On NTFS, in a Rust workspace of
-970 packages, it made creating a worktree 10 seconds slower and its first build
-45 seconds faster, and after that build both took the same space. Worth it
-where every worktree gets built; not where most are only read.
+`large-caches = "always"` trades disk for time where nothing can be shared: a
+worktree on another volume than its source, or Unity's build cache, which only
+player builds read. Worth it where every worktree gets built; not where most
+are only read.
 
 A mistake never stops a worktree: an unknown key or a bad value is skipped with
 a warning, and a file that is not valid TOML is ignored whole. `git multibox
