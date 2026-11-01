@@ -1,6 +1,6 @@
 # Multibox guide
 
-The details behind the [README](../README.md): how a worktree is made, what
+The details behind the [README](../README.en.md): how a worktree is made, what
 each engine gets, every command and option, and the configuration file.
 
 ## How it works

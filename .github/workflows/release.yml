@@ -27,7 +27,7 @@ jobs:
         run: |
           set "NAME=git-multibox-%GITHUB_REF_NAME%-x86_64-pc-windows-msvc"
           mkdir "dist\%NAME%" || exit /b 1
-          for %%f in (target\release\git-multibox.exe README.md LICENSE-MIT LICENSE-APACHE) do (
+          for %%f in (target\release\git-multibox.exe README.md README.en.md LICENSE-MIT LICENSE-APACHE) do (
             copy /y "%%f" "dist\%NAME%\" >nul || exit /b 1
           )
           "%SystemRoot%\System32\tar.exe" -a -cf "dist\%NAME%.zip" -C dist "%NAME%"
@@ -47,7 +47,7 @@ jobs:
             cargo build --release --locked -p git-multibox --target "$target"
             name="git-multibox-$GITHUB_REF_NAME-$target"
             mkdir -p "dist/$name"
-            cp "target/$target/release/git-multibox" README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
+            cp "target/$target/release/git-multibox" README.md README.en.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
             # Without these, macOS metadata travels as ._ files and xattr
             # headers that other systems unpack as clutter.
             COPYFILE_DISABLE=1 /usr/bin/tar --no-xattrs --no-mac-metadata \
