@@ -7,6 +7,7 @@
 
 pub mod adapter;
 mod add;
+mod config;
 mod doctor;
 mod finish;
 pub mod git;
@@ -18,6 +19,7 @@ mod rules;
 mod setup;
 
 pub use add::{AddOptions, AddOutcome, Mode, Observer, add};
+pub use config::{CONFIG_FILE, Config, LargeCaches};
 pub use doctor::{Check, Diagnosis, Level, diagnose};
 pub use finish::{FinishOptions, FinishOutcome, finish};
 pub use migrate::{

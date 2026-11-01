@@ -1,4 +1,5 @@
 use crate::adapter;
+use crate::config::Config;
 use crate::git::{self, Repo};
 use crate::index::Index;
 use crate::remove::{RemoveOptions, RemoveOutcome, refuse_if_editor_open, remove};
@@ -8,9 +9,10 @@ use std::path::Path;
 pub struct FinishOptions {
     /// The worktree whose branch comes back, removed once it has.
     pub path: String,
-    /// Keep the branch after it is merged.
+    /// Keep the branch after it is merged, as `.multibox.toml` can also ask.
     pub keep_branch: bool,
-    /// Passed to `git merge` after the adapters' own, such as `--no-ff`.
+    /// Passed to `git merge` last, after the adapters' own and those of
+    /// `.multibox.toml`, such as `--no-ff`.
     pub merge_args: Vec<String>,
 }
 
@@ -43,12 +45,17 @@ fn current_branch(dir: &Path) -> Option<String> {
         .filter(|name| !name.is_empty())
 }
 
-fn merge_options(repo: &Repo) -> Vec<String> {
-    let Ok(index) = Index::read(&repo.index_path(), repo.hash_len) else {
-        return Vec::new();
+/// The engines' merge options, then those of `.multibox.toml`.
+fn merge_options(repo: &Repo, config: &Config) -> Vec<String> {
+    let mut options = match Index::read(&repo.index_path(), repo.hash_len) {
+        Ok(index) => {
+            let tracked: Vec<&str> = index.entries.iter().map(|e| e.path.as_str()).collect();
+            adapter::merge_options(&adapter::detect_enabled(&repo.worktree, &tracked, config))
+        }
+        Err(_) => Vec::new(),
     };
-    let tracked: Vec<&str> = index.entries.iter().map(|e| e.path.as_str()).collect();
-    adapter::merge_options(&adapter::detect(&repo.worktree, &tracked))
+    options.extend(config.merge_options.iter().cloned());
+    options
 }
 
 /// Merges the branch of the worktree at `options.path` into the branch checked
@@ -105,6 +112,7 @@ pub fn finish(cwd: &Path, options: &FinishOptions) -> Result<FinishOutcome> {
         )));
     }
     refuse_if_editor_open(&task)?;
+    let config = Config::load(&target.worktree);
 
     let merged_before = git::quiet(
         &target.worktree,
@@ -114,7 +122,7 @@ pub fn finish(cwd: &Path, options: &FinishOptions) -> Result<FinishOutcome> {
     let mut merge_output = String::new();
     if !merged_before {
         let mut args = vec!["merge".to_owned(), "--no-edit".to_owned()];
-        args.extend(merge_options(&target));
+        args.extend(merge_options(&target, &config));
         args.extend(options.merge_args.iter().cloned());
         args.push(branch.clone());
         match git::output(&target.worktree, &args) {
@@ -148,8 +156,9 @@ pub fn finish(cwd: &Path, options: &FinishOptions) -> Result<FinishOutcome> {
             force: 0,
         },
     )?;
-    let branch_deleted = !options.keep_branch
-        && git::quiet(&target.worktree, &["branch", "-d", branch.as_str()]).is_ok();
+    let keep_branch = options.keep_branch || config.keep_branch;
+    let branch_deleted =
+        !keep_branch && git::quiet(&target.worktree, &["branch", "-d", branch.as_str()]).is_ok();
     Ok(FinishOutcome::Finished {
         branch,
         into,

@@ -4,10 +4,10 @@
 //! every other subcommand is handed to git unchanged.
 
 use multibox_core::{
-    AddOptions, FinishOptions, FinishOutcome, InitOptions, InitOutcome, Level, MigrateOptions,
-    Mode, Mount, Observer, Progress, RemoveOptions, SetupOptions, adapter, add, diagnose, finish,
-    git, init, migrate, plan_setup, purge_trash, remove, run_setup, spawn_detached, sweep_trash,
-    switch,
+    AddOptions, CONFIG_FILE, Config, FinishOptions, FinishOutcome, InitOptions, InitOutcome, Level,
+    MigrateOptions, Mode, Mount, Observer, Progress, RemoveOptions, SetupOptions, adapter, add,
+    diagnose, finish, git, init, migrate, plan_setup, purge_trash, remove, run_setup,
+    spawn_detached, sweep_trash, switch,
 };
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -50,6 +50,10 @@ that hits conflicts in progress, as git does. Run it again once committed.
     --json              print the result as JSON on stdout
 
 Every option of `git worktree add` is accepted and passed through.
+
+Nothing needs configuring. A .multibox.toml at the root of the repository can
+carry more or fewer paths, turn engines off, set finish's merge options or
+turn Multibox off for the repository; `git multibox doctor` shows what it does.
 ";
 
 fn gib(bytes: u64) -> f64 {
@@ -191,7 +195,9 @@ fn run_add(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
         terminal.warn(warning);
     }
     let summary = outcome.summary;
-    let method = if outcome.capability.reflink {
+    let method = if outcome.native {
+        "git"
+    } else if outcome.capability.reflink {
         "reflink"
     } else {
         "copy"
@@ -214,6 +220,12 @@ fn run_add(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
             "environment": environment_object(&outcome.environment),
         });
         println!("{value}");
+        return Ok(ExitCode::SUCCESS);
+    }
+    if outcome.native {
+        if !options.dry_run {
+            println!("{}: plain git worktree", outcome.path.display());
+        }
         return Ok(ExitCode::SUCCESS);
     }
     if options.dry_run {
@@ -240,7 +252,8 @@ fn run_add(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
             "run tools in this worktree with {key}={value}, or use `git multibox env`"
         ));
     }
-    if !outcome.capability.reflink && options.mode == Mode::Auto {
+    // Across volumes the advice is where to put the worktree, given above.
+    if !outcome.capability.reflink && outcome.capability.same_volume && options.mode == Mode::Auto {
         terminal.note(&format!(
             "copy mode used {:.1} GiB. `git multibox setup` enables reflinks: new worktrees then take seconds and almost no space.",
             gib(summary.tracked_bytes + summary.cached_bytes)
@@ -332,6 +345,12 @@ fn run_finish(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
     }
     if options.path.is_empty() {
         return Err("finish needs a <worktree>".to_owned());
+    }
+    if let Ok(repo) = git::Repo::discover(cwd) {
+        let terminal = Terminal::default();
+        for problem in Config::load(&repo.worktree).problems {
+            terminal.warn(&format!("{CONFIG_FILE}: {problem}"));
+        }
     }
     match finish(cwd, &options).map_err(|err| err.to_string())? {
         FinishOutcome::Conflicts {

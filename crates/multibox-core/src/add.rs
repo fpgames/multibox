@@ -1,4 +1,5 @@
 use crate::adapter;
+use crate::config::{CONFIG_FILE, Config};
 use crate::git::{self, Repo};
 use crate::index::{Index, Stat};
 use crate::plan::{Plan, PlanSummary, build_plan};
@@ -58,6 +59,8 @@ pub struct AddOutcome {
     pub warnings: Vec<String>,
     /// Variables that keep engine tooling inside the new worktree.
     pub environment: Vec<(String, String)>,
+    /// True when `.multibox.toml` turned Multibox off and git did everything.
+    pub native: bool,
 }
 
 const DATABASE_ATTEMPTS: usize = 3;
@@ -460,6 +463,64 @@ fn describe_failures(report: &Report, warnings: &mut Vec<String>) {
     ));
 }
 
+fn config_warnings(config: &Config) -> Vec<String> {
+    config
+        .problems
+        .iter()
+        .map(|problem| format!("{CONFIG_FILE}: {problem}"))
+        .collect()
+}
+
+/// A worktree on another volume is a full copy. Says so when the source's own
+/// volume would have shared the data instead.
+fn other_volume_hint(source: &Repo, target: &Path, capability: &Capability) -> Option<String> {
+    if capability.same_volume {
+        return None;
+    }
+    // Probing writes a scratch file on some systems; git's directory hides it.
+    let home = probe(&source.worktree, &source.common_dir).ok()?;
+    home.reflink.then(|| {
+        format!(
+            "{} is on another volume than {}, so everything is copied; next to the source, on its {} volume, a worktree would share its data and take almost no space",
+            target.display(),
+            source.worktree.display(),
+            home.filesystem
+        )
+    })
+}
+
+/// `.multibox.toml` turned Multibox off, so git does all of it.
+fn add_natively(
+    cwd: &Path,
+    options: &AddOptions,
+    target: PathBuf,
+    capability: Capability,
+    config: &Config,
+) -> Result<AddOutcome> {
+    let mut warnings = config_warnings(config);
+    warnings.push(format!(
+        "{CONFIG_FILE} sets enabled = false, so this is a plain git worktree"
+    ));
+    let path = if options.dry_run {
+        target
+    } else {
+        let mut args = vec!["worktree", "add"];
+        args.extend(options.git_args.iter().map(String::as_str));
+        git::run(cwd, &args)?;
+        Repo::discover(&target).map_or(target, |repo| repo.worktree)
+    };
+    Ok(AddOutcome {
+        path,
+        summary: PlanSummary::default(),
+        capability,
+        reused_index: false,
+        report: None,
+        warnings,
+        environment: Vec::new(),
+        native: true,
+    })
+}
+
 /// Creates a worktree, as `git worktree add` would, carrying over everything
 /// the plan selected. `cwd` is where a relative `path` is resolved.
 pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<AddOutcome> {
@@ -468,7 +529,12 @@ pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<
         .as_ref()
         .map_or_else(|| cwd.to_path_buf(), |from| cwd.join(from));
     let target = cwd.join(&options.path);
-    let capability = probe(&Repo::discover(&source)?.worktree, &target)?;
+    let source_repo = Repo::discover(&source)?;
+    let capability = probe(&source_repo.worktree, &target)?;
+    let config = Config::load(&source_repo.worktree);
+    if !config.enabled {
+        return add_natively(cwd, options, target, capability, &config);
+    }
     let strategy = resolve_mode(options.mode);
     let frugal = !capability.reflink || strategy == Strategy::Copy;
     let mut plan = build_plan(&source, options.carry, frugal, options.threads)?;
@@ -479,7 +545,7 @@ pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<
         )));
     }
 
-    let mut warnings = Vec::new();
+    let mut warnings = config_warnings(&plan.config);
     if let Some(problem) = &plan.index_problem {
         warnings.push(format!(
             "source index not reused ({problem}); git will do a full checkout"
@@ -493,6 +559,9 @@ pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<
         warnings.push(format!(
             "{first}{more} left behind: reinstalling is faster than a copy, so it is only carried as a reflink"
         ));
+    }
+    if options.mode != Mode::Copy {
+        warnings.extend(other_volume_hint(&source_repo, &target, &capability));
     }
     if !plan.manifest.skipped.is_empty() {
         warnings.push(format!(
@@ -528,6 +597,7 @@ pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<
             reused_index: plan.index.is_some(),
             report: None,
             warnings,
+            native: false,
         });
     }
     if !capability.reflink {
@@ -600,6 +670,7 @@ pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<
                 reused_index: plan.index.is_some(),
                 report: Some(report),
                 warnings,
+                native: false,
             })
         }
         Err(err) => {

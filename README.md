@@ -16,6 +16,17 @@ git multibox add ../feature -b feature   # same arguments, ready to open
 Any git repository works. Game projects gain the most, because their caches are
 the slowest thing to rebuild.
 
+## Install
+
+Download `git-multibox` for your platform from the
+[releases](https://github.com/fpgames/multibox/releases), check it against
+`SHA256SUMS`, and put it on your `PATH`; git then runs it as `git multibox`.
+Or build it with Rust 1.85 or later:
+
+```bash
+cargo install --locked --git https://github.com/fpgames/multibox git-multibox
+```
+
 ## How it works
 
 A native worktree is a clean checkout. For a Unity project that means no
@@ -68,8 +79,9 @@ off. The measurements behind these rules are in
   source tree follow the clone, files that record the project's path are
   rewritten, and build output compiled from the project's own sources is rebuilt.
 - **Copy mode is frugal.** Without reflinks every carried byte costs disk space,
-  so large caches stay behind unless `.worktreeinclude` asks for them. Caches a
-  reinstall restores faster stay behind even then, with a warning.
+  so large caches stay behind unless `.worktreeinclude` or `.multibox.toml`
+  asks for them. Caches a reinstall restores faster stay behind even then, with
+  a warning.
 
 ## Commands
 
@@ -138,7 +150,10 @@ Adapters recognise engine projects from the tracked files.
 in `Assets/`, `Packages/` and `ProjectSettings/` is carried, including ignored
 generated assets. `UserSettings/` and IDE projects come along too. `Temp/`,
 `Logs/`, `obj/`, and Multiplayer Play Mode's virtual players stay behind, along
-with everything that identifies the source editor (see below).
+with everything that identifies the source editor (see below). In copy mode
+`Library/BuildCache/` and the search index in `Library/Search/` stay behind
+too: only player builds read the first, and the editor rebuilds the second in
+the background.
 
 **Rust** workspaces are found by a tracked `Cargo.toml` with `Cargo.lock` beside
 it. Compiled dependencies in `target/` come along: `deps/`, `build/` and
@@ -184,6 +199,47 @@ Links in what you add are repointed at the new worktree, but other recorded
 paths are not, so check that a cache does not store absolute paths before
 adding it.
 
+## Configuration
+
+Nothing needs configuring. A `.multibox.toml` at the repository root adjusts
+the details, and every key in it is optional. Commit it to share the settings,
+or list it in `.git/info/exclude` to keep them to yourself; either way it
+travels into new worktrees. These are the defaults:
+
+```toml
+enabled = true          # false: `git multibox add` is a plain `git worktree add` here
+
+[carry]
+include = []            # more ignored paths to carry, as in .worktreeinclude
+exclude = []            # ignored paths never to carry, whatever asks for them
+large-caches = "auto"   # Rust's target/, Unity's BuildCache and search index:
+                        # "auto" carries them where the filesystem shares them,
+                        # "always" copies them on NTFS and ext4 too, "never" leaves them
+
+[engines]               # false turns an adapter off
+unity = true
+cargo = true
+pnpm = true
+typescript = true
+
+[finish]
+merge-options = []      # passed to git merge after the engines' own
+keep-branch = false
+```
+
+The patterns come after the adapters' and those of `.worktreeinclude`, so they
+have the last word, except over the refusals described above: `node_modules/`
+is never copied, whatever asks for it. Command-line options win over the file.
+
+`large-caches = "always"` trades disk for time. On NTFS, in a Rust workspace of
+970 packages, it made creating a worktree 10 seconds slower and its first build
+45 seconds faster, and after that build both took the same space. Worth it
+where every worktree gets built; not where most are only read.
+
+A mistake never stops a worktree: an unknown key or a bad value is skipped with
+a warning, and a file that is not valid TOML is ignored whole. `git multibox
+doctor` shows what the file changes and anything it skipped.
+
 ## Working next to an open editor
 
 Your main editor can stay open while worktrees come and go. Multibox is built
@@ -214,8 +270,9 @@ progress, and `build_plan` reports the cost of a worktree before creating it.
 ## Status
 
 Early. Tested end to end on Windows and macOS with real Unity 6 projects, a
-Rust workspace and a pnpm monorepo. Linux passes the automated
-tests but has not been run against a real project. Unreal Engine is planned.
+Rust workspace and a pnpm monorepo. Continuous integration runs on a Windows
+machine, on NTFS and on a Dev Drive, and on an Apple Silicon Mac. Linux builds
+but is not tested. Unreal Engine is planned.
 
 ## License
 

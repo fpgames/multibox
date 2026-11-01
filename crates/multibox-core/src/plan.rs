@@ -1,4 +1,5 @@
 use crate::adapter::{self, Project};
+use crate::config::{CONFIG_FILE, Config};
 use crate::git::{self, Repo};
 use crate::index::Index;
 use crate::rules::Rules;
@@ -21,6 +22,8 @@ pub struct Plan {
     /// Ignored directories the rules asked for that an adapter refused to
     /// carry in this mode.
     pub refused: Vec<String>,
+    /// The source's `.multibox.toml`.
+    pub config: Config,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -87,8 +90,10 @@ pub fn build_plan(
             listed.split('\0').filter(|path| !path.is_empty()).collect()
         }
     };
-    let projects = adapter::detect(&repo.worktree, &tracked);
-    let rules = Rules::load(&repo.worktree, &projects, frugal)?;
+    let config = Config::load(&repo.worktree);
+    let projects = adapter::detect_enabled(&repo.worktree, &tracked, &config);
+    let rules = Rules::load(&repo.worktree, &projects, frugal, &config)?;
+    let local_config = config.found && !tracked.contains(&CONFIG_FILE);
 
     let mut files = Vec::new();
     let mut links = Vec::new();
@@ -127,6 +132,13 @@ pub fn build_plan(
             }
         }
     }
+    // A configuration kept out of git still applies to commands run in the new
+    // worktree, such as `finish`.
+    if local_config && !files.iter().any(|(path, _)| path == CONFIG_FILE) {
+        if let Ok(meta) = fs::metadata(repo.worktree.join(CONFIG_FILE)) {
+            files.push((CONFIG_FILE.to_owned(), meta.len()));
+        }
+    }
 
     // Outermost first, so a report names the one a user would recognise.
     refused.sort_by_key(|dir| (dir.matches('/').count(), dir.clone()));
@@ -158,5 +170,6 @@ pub fn build_plan(
         manifest,
         summary,
         refused,
+        config,
     })
 }

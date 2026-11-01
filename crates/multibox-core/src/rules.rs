@@ -1,4 +1,5 @@
 use crate::adapter::{self, Project};
+use crate::config::{Config, LargeCaches};
 use crate::{Error, Result};
 use ignore::Match;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
@@ -11,10 +12,11 @@ pub const INCLUDE_FILE: &str = ".worktreeinclude";
 /// Decides which ignored paths travel to a new worktree.
 ///
 /// Patterns use gitignore syntax and are evaluated in order: engine defaults,
-/// then engine exclusions, then the repository's `.worktreeinclude`. The last
-/// match wins, so a repository can override anything an adapter decided, with
-/// one exception: paths an adapter refuses outright are never carried, other
-/// than single files an adapter has verified.
+/// then engine exclusions, then the repository's `.worktreeinclude`, then the
+/// includes and excludes of its `.multibox.toml`. The last match wins, so a
+/// repository can override anything an adapter decided, with one exception:
+/// paths an adapter refuses outright are never carried, other than single
+/// files an adapter has verified.
 pub struct Rules {
     matcher: Gitignore,
     refused: Gitignore,
@@ -78,17 +80,31 @@ impl Rules {
     }
 
     /// Combines adapter defaults for `projects` with the `.worktreeinclude`
-    /// file at the root of `worktree`, if there is one. With `frugal` set, as
-    /// in copy mode, caches that cost real disk space are left out too.
-    pub fn load(worktree: &Path, projects: &[Project], frugal: bool) -> Result<Rules> {
+    /// file at the root of `worktree`, if there is one, and the patterns of
+    /// `config`. With `frugal` set, as in copy mode, caches that cost real disk
+    /// space are left out too; `config` can change that default. Explicit
+    /// patterns still bring any of them back.
+    pub fn load(
+        worktree: &Path,
+        projects: &[Project],
+        frugal: bool,
+        config: &Config,
+    ) -> Result<Rules> {
         let includes: Vec<String> = projects.iter().flat_map(adapter::includes).collect();
-        let (expensive, refused) = if frugal {
-            (
-                projects.iter().flat_map(adapter::expensive).collect(),
-                projects.iter().flat_map(adapter::reflink_only).collect(),
-            )
+        let skip_expensive = match config.large_caches {
+            LargeCaches::Auto => frugal,
+            LargeCaches::Always => false,
+            LargeCaches::Never => true,
+        };
+        let expensive: Vec<String> = if skip_expensive {
+            projects.iter().flat_map(adapter::expensive).collect()
         } else {
-            (Vec::new(), Vec::new())
+            Vec::new()
+        };
+        let refused: Vec<String> = if frugal {
+            projects.iter().flat_map(adapter::reflink_only).collect()
+        } else {
+            Vec::new()
         };
         // An expensive include is simply not made, so `.worktreeinclude` can
         // still ask for its whole tree. One inside a broader include has to be
@@ -115,6 +131,9 @@ impl Rules {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => return Err(err.into()),
         }
+        // The repository's own settings come last, so they win.
+        lines.extend(config.include.iter().cloned());
+        lines.extend(config.exclude.iter().map(|pattern| format!("!{pattern}")));
         let exempt: Vec<String> = projects
             .iter()
             .flat_map(|project| project.verified_files.iter().cloned())

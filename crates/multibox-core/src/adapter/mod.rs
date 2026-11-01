@@ -21,6 +21,7 @@ pub use typescript::TypeScript;
 pub use unity::Unity;
 
 use crate::Result;
+use crate::config::Config;
 use crate::git::{self, Repo};
 use std::path::Path;
 
@@ -103,6 +104,9 @@ pub fn adapters() -> &'static [&'static dyn Adapter] {
     &[&Unity, &Cargo, &Pnpm, &TypeScript]
 }
 
+/// The engines adapters exist for, as projects and `.multibox.toml` name them.
+pub const ENGINES: [&str; 4] = ["unity", "cargo", "pnpm", "typescript"];
+
 fn adapter_for(project: &Project) -> Option<&'static dyn Adapter> {
     match project.engine {
         "unity" => Some(&Unity),
@@ -119,6 +123,13 @@ pub fn detect(worktree: &Path, tracked: &[&str]) -> Vec<Project> {
         .iter()
         .flat_map(|adapter| adapter.detect(worktree, tracked))
         .collect()
+}
+
+/// The projects of engines `config` leaves on.
+pub fn detect_enabled(worktree: &Path, tracked: &[&str], config: &Config) -> Vec<Project> {
+    let mut projects = detect(worktree, tracked);
+    projects.retain(|project| config.engine_enabled(project.engine));
+    projects
 }
 
 pub fn includes(project: &Project) -> Vec<String> {
@@ -186,9 +197,10 @@ pub fn worktree_environment(dir: &Path) -> Result<Vec<(String, String)>> {
     let repo = Repo::discover(dir)?;
     let listed = git::output(&repo.worktree, &["ls-files", "-z"])?;
     let tracked: Vec<&str> = listed.split('\0').filter(|path| !path.is_empty()).collect();
+    let config = Config::load(&repo.worktree);
     Ok(environment(
         &repo.worktree,
-        &detect(&repo.worktree, &tracked),
+        &detect_enabled(&repo.worktree, &tracked, &config),
     ))
 }
 

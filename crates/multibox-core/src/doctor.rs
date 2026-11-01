@@ -1,4 +1,5 @@
 use crate::adapter;
+use crate::config::{CONFIG_FILE, Config};
 use crate::git::{self, Repo};
 use crate::index::Index;
 use multibox_clone::{Capability, Volume, probe, volumes};
@@ -94,6 +95,18 @@ fn check_repository(report: &mut Diagnosis, cwd: &Path) {
     };
     report.push("repository", Level::Ok, repo.worktree.display().to_string());
 
+    let config = Config::load(&repo.worktree);
+    if config.found {
+        report.push(
+            "config",
+            Level::Ok,
+            format!("{CONFIG_FILE}: {}", config.describe()),
+        );
+        for problem in &config.problems {
+            report.push("config", Level::Warn, problem.clone());
+        }
+    }
+
     match probe(&repo.worktree, &repo.worktree) {
         Ok(capability) => {
             let detail = format!(
@@ -161,6 +174,14 @@ fn check_repository(report: &mut Diagnosis, cwd: &Path) {
             Some(version) => format!("{} {version} at {root}", project.engine),
             None => format!("{} at {root}", project.engine),
         };
+        if !config.engine_enabled(project.engine) {
+            report.push(
+                "project",
+                Level::Info,
+                format!("{name}, turned off in {CONFIG_FILE}"),
+            );
+            continue;
+        }
         report.push("project", Level::Ok, name);
         if let Some(editor) = adapter::running_editor(&repo.worktree, &project) {
             let pid = editor

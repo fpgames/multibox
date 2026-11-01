@@ -82,8 +82,16 @@ impl Adapter for Unity {
     }
 
     fn expensive(&self, project: &Project) -> Vec<String> {
-        // The build pipeline's cache: only player and bundle builds read it.
-        vec![format!("/{}", project.path("Library/BuildCache/"))]
+        [
+            // The build pipeline's cache: only player and bundle builds read it.
+            "Library/BuildCache/",
+            // The search index, 2.8 GiB in a project of 100,000 assets. The
+            // editor rebuilds it in the background; nothing waits for it.
+            "Library/Search/",
+        ]
+        .iter()
+        .map(|path| format!("/{}", project.path(path)))
+        .collect()
     }
 
     fn volatile_files(&self, project: &Project) -> Vec<String> {

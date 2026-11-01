@@ -819,12 +819,18 @@ fn init_copies_while_the_editor_is_open_and_finishes_once_it_closes() {
 fn copy_mode_leaves_expensive_caches_behind() {
     let (_temp, repo) = unity_repo();
     write(&repo, "client/Library/BuildCache/huge.bin", "build cache\n");
+    write(
+        &repo,
+        "client/Library/Search/assets.index",
+        "search index\n",
+    );
     let mut request = options("../wt", &["--detach"]);
     request.mode = Mode::Copy;
     add(&repo, &request, &Silent).unwrap();
     let wt = repo.parent().unwrap().join("wt");
     assert!(wt.join("client/Library/ArtifactDB").exists());
     assert!(!wt.join("client/Library/BuildCache").exists());
+    assert!(!wt.join("client/Library/Search").exists());
 }
 
 #[test]
@@ -1237,4 +1243,140 @@ fn concurrent_removals_never_trip_over_each_others_trash() {
         .filter(|name| name.starts_with(".multibox-trash-"))
         .collect();
     assert!(left.is_empty(), "{left:?}");
+}
+
+/// Writes a `.multibox.toml` kept out of git, as a developer would for
+/// settings of their own.
+fn local_config(repo: &Path, text: &str) {
+    write(repo, ".multibox.toml", text);
+    let exclude = repo.join(".git/info/exclude");
+    let mut rules = fs::read_to_string(&exclude).unwrap_or_default();
+    rules.push_str("\n/.multibox.toml\n");
+    write(repo, ".git/info/exclude", &rules);
+}
+
+#[test]
+fn config_includes_and_excludes_have_the_last_word() {
+    let (_temp, repo) = unity_repo();
+    local_config(
+        &repo,
+        "[carry]\ninclude = [\"/scratch/\"]\nexclude = [\"/client/Library/Artifacts/\"]\n",
+    );
+    add(&repo, &options("../wt", &["--detach"]), &Silent).unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+    assert!(wt.join("scratch/notes.txt").exists());
+    assert!(wt.join("client/Library/ArtifactDB").exists());
+    assert!(!wt.join("client/Library/Artifacts").exists());
+    // Kept out of git, it still travels, so commands run there see it.
+    assert!(wt.join(".multibox.toml").exists());
+    assert_eq!(status(&wt), "");
+}
+
+#[test]
+fn large_caches_always_copies_them_except_node_modules() {
+    let (_temp, repo) = cargo_repo();
+    local_config(&repo, "[carry]\nlarge-caches = \"always\"\n");
+    add(&repo, &copy_mode("../wt"), &Silent).unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+    assert!(
+        wt.join("target/debug/deps/libserde-0123456789abcdef.rlib")
+            .exists()
+    );
+    assert!(
+        !wt.join("target/debug/.fingerprint/app-1111111111111111")
+            .exists()
+    );
+
+    let (_temp, repo) = pnpm_repo();
+    local_config(&repo, "[carry]\nlarge-caches = \"always\"\n");
+    add(&repo, &copy_mode("../wt"), &Silent).unwrap();
+    assert!(!repo.parent().unwrap().join("wt/node_modules").exists());
+}
+
+#[test]
+fn large_caches_never_leaves_them_behind_unless_a_pattern_asks() {
+    let (_temp, repo) = cargo_repo();
+    local_config(&repo, "[carry]\nlarge-caches = \"never\"\n");
+    add(&repo, &options("../wt", &["--detach"]), &Silent).unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+    assert!(wt.join("app/Cargo.toml").exists());
+    assert!(!wt.join("target/debug/deps").exists());
+
+    // An explicit pattern is a decision for this repository, so it wins.
+    write(&repo, ".worktreeinclude", "target/\n");
+    add(&repo, &options("../wt2", &["--detach"]), &Silent).unwrap();
+    assert!(
+        repo.parent()
+            .unwrap()
+            .join("wt2/target/debug/deps/libserde-0123456789abcdef.rlib")
+            .exists()
+    );
+}
+
+#[test]
+fn a_turned_off_engine_carries_nothing_of_its_own() {
+    let (_temp, repo) = unity_repo();
+    local_config(&repo, "[engines]\nunity = false\n");
+    add(&repo, &options("../wt", &["--detach"]), &Silent).unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+    assert!(wt.join("client/Assets/a.txt").exists());
+    assert!(!wt.join("client/Library").exists());
+}
+
+#[test]
+fn turned_off_multibox_is_a_plain_git_worktree() {
+    let (_temp, repo) = unity_repo();
+    local_config(&repo, "enabled = false\n");
+    let outcome = add(&repo, &options("../wt", &["-b", "task"]), &Silent).unwrap();
+    assert!(outcome.native);
+    let wt = repo.parent().unwrap().join("wt");
+    assert!(wt.join("client/Assets/a.txt").exists());
+    assert!(!wt.join("client/Library").exists());
+    assert_eq!(sh(&wt, &["branch", "--show-current"]).trim(), "task");
+    assert_eq!(status(&wt), "");
+}
+
+#[test]
+fn a_broken_config_never_stops_a_worktree() {
+    let (_temp, repo) = unity_repo();
+    local_config(&repo, "[carry\ninclude = [");
+    let outcome = add(&repo, &options("../wt", &["--detach"]), &Silent).unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+    assert!(wt.join("client/Library/ArtifactDB").exists());
+    assert!(
+        outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.starts_with(".multibox.toml: not valid TOML")),
+        "{:?}",
+        outcome.warnings
+    );
+}
+
+#[test]
+fn finish_takes_merge_options_and_branch_keeping_from_the_config() {
+    let (_temp, repo) = unity_repo();
+    write(
+        &repo,
+        ".multibox.toml",
+        "[finish]\nmerge-options = [\"--no-ff\"]\nkeep-branch = true\n",
+    );
+    commit_all(&repo, "settings");
+    add(&repo, &options("../wt", &["-b", "task"]), &Silent).unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+    write(&wt, "client/Assets/new.txt", "from the task\n");
+    commit_all(&wt, "task work");
+
+    let (merged_now, branch_deleted) = finished(finish(&repo, &finish_options("../wt")).unwrap());
+    assert!(merged_now && !branch_deleted);
+    let parents = sh(&repo, &["rev-list", "--parents", "-n", "1", "HEAD"]);
+    assert_eq!(parents.split_whitespace().count(), 3, "{parents}");
+    assert_eq!(
+        sh(
+            &repo,
+            &["branch", "--list", "--format=%(refname:short)", "task"]
+        )
+        .trim(),
+        "task"
+    );
 }
