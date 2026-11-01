@@ -529,6 +529,14 @@ pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<
         .as_ref()
         .map_or_else(|| cwd.to_path_buf(), |from| cwd.join(from));
     let target = cwd.join(&options.path);
+    if let Some(from) = &options.from {
+        if !source.is_dir() {
+            return Err(Error::new(format!(
+                "'{}' is not a working tree",
+                from.display()
+            )));
+        }
+    }
     let source_repo = Repo::discover(&source)?;
     let capability = probe(&source_repo.worktree, &target)?;
     let config = Config::load(&source_repo.worktree);

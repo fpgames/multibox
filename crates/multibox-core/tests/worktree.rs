@@ -1245,6 +1245,26 @@ fn concurrent_removals_never_trip_over_each_others_trash() {
     assert!(left.is_empty(), "{left:?}");
 }
 
+#[test]
+fn a_missing_worktree_is_named_in_the_error() {
+    let (_temp, repo) = unity_repo();
+    let err = finish(&repo, &finish_options("../nope")).unwrap_err();
+    assert_eq!(err.to_string(), "'../nope' is not a working tree");
+
+    let mut request = options("../wt", &["--detach"]);
+    request.from = Some(PathBuf::from("../nope"));
+    let err = add(&repo, &request, &Silent).unwrap_err();
+    assert_eq!(err.to_string(), "'../nope' is not a working tree");
+    assert!(!repo.parent().unwrap().join("wt").exists());
+}
+
+#[test]
+fn git_errors_do_not_repeat_fatal() {
+    let outside = TempDir::new().unwrap();
+    let err = git::Repo::discover(outside.path()).unwrap_err();
+    assert!(err.to_string().starts_with("not a git repository"), "{err}");
+}
+
 /// Writes a `.multibox.toml` kept out of git, as a developer would for
 /// settings of their own.
 fn local_config(repo: &Path, text: &str) {

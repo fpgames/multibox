@@ -67,7 +67,14 @@ fn merge_options(repo: &Repo, config: &Config) -> Vec<String> {
 /// it; once it is committed, running `finish` again only cleans up.
 pub fn finish(cwd: &Path, options: &FinishOptions) -> Result<FinishOutcome> {
     let target = Repo::discover(cwd)?;
-    let task = Repo::discover(&cwd.join(&options.path))?;
+    let task_dir = cwd.join(&options.path);
+    if !task_dir.is_dir() {
+        return Err(Error::new(format!(
+            "'{}' is not a working tree",
+            options.path
+        )));
+    }
+    let task = Repo::discover(&task_dir)?;
     if task.git_dir == target.git_dir {
         return Err(Error::new(
             "run finish from the worktree that should receive the branch",

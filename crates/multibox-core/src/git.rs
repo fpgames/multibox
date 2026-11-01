@@ -21,9 +21,10 @@ pub fn output<S: AsRef<OsStr>>(dir: &Path, args: &[S]) -> Result<String> {
     if result.status.success() {
         Ok(String::from_utf8_lossy(&result.stdout).into_owned())
     } else {
-        Err(Error::new(
-            String::from_utf8_lossy(&result.stderr).trim().to_owned(),
-        ))
+        let message = String::from_utf8_lossy(&result.stderr).trim().to_owned();
+        // Whoever reports the error adds its own "fatal: ".
+        let message = message.strip_prefix("fatal: ").unwrap_or(&message);
+        Err(Error::new(message))
     }
 }
 
@@ -69,6 +70,11 @@ pub struct Repo {
 
 impl Repo {
     pub fn discover(dir: &Path) -> Result<Repo> {
+        // git cannot even start in a missing directory, and the system's
+        // message for that names neither the directory nor the problem.
+        if !dir.is_dir() {
+            return Err(Error::new(format!("{} is not a directory", dir.display())));
+        }
         let out = output(
             dir,
             &[
