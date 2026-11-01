@@ -1,22 +1,56 @@
 name: CI
 
+# Runs on the project's own machines, not GitHub-hosted runners. Pull requests
+# from forks never run here unless a maintainer approves them after reading
+# their changes; the repository requires that approval for every outside
+# contributor, and the jobs below skip fork pull requests on top of it.
+
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
+  windows:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Windows, X64]
+    # cmd, because Windows PowerShell can turn cargo's progress on stderr into
+    # a failure.
+    defaults:
+      run:
+        shell: cmd
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - name: Test on NTFS, in copy mode
+        run: cargo test --workspace
+      # The runner names a directory on a Dev Drive in its .env file.
+      - name: Test on a Dev Drive, with reflinks
+        run: |
+          if "%MULTIBOX_REFLINK_TMP%"=="" (
+            echo ::notice::this runner has no MULTIBOX_REFLINK_TMP, reflinks untested
+            exit /b 0
+          )
+          if not exist "%MULTIBOX_REFLINK_TMP%" mkdir "%MULTIBOX_REFLINK_TMP%"
+          set "TMP=%MULTIBOX_REFLINK_TMP%"
+          set "TEMP=%MULTIBOX_REFLINK_TMP%"
+          cargo test --workspace
+
+  macos:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64]
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test on APFS, with reflinks
+        run: cargo test --workspace

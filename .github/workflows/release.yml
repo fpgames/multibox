@@ -1,0 +1,79 @@
+name: Release
+
+# Pushing a tag such as v0.1.0 builds git-multibox on the project's own
+# Windows and Mac machines and publishes the archives with their checksums.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: [self-hosted, Windows, X64]
+    steps:
+      - uses: actions/checkout@v4
+      # cmd, because Windows PowerShell can turn cargo's progress on stderr
+      # into a failure.
+      - run: cargo build --release --locked -p git-multibox
+        shell: cmd
+      - name: Package
+        shell: powershell
+        run: |
+          $name = "git-multibox-$env:GITHUB_REF_NAME-x86_64-pc-windows-msvc"
+          New-Item -ItemType Directory -Force "dist/$name" | Out-Null
+          Copy-Item target/release/git-multibox.exe, README.md, LICENSE-MIT, LICENSE-APACHE "dist/$name"
+          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip" -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.zip
+
+  macos:
+    runs-on: [self-hosted, macOS, ARM64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and package
+        run: |
+          set -eu
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --locked -p git-multibox --target "$target"
+            name="git-multibox-$GITHUB_REF_NAME-$target"
+            mkdir -p "dist/$name"
+            cp "target/$target/release/git-multibox" README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*.tar.gz
+
+  publish:
+    needs: [windows, macos]
+    runs-on: [self-hosted, Windows, X64]
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Set-Location dist
+          $files = Get-ChildItem -File | Where-Object { $_.Name -ne 'SHA256SUMS' } | Sort-Object Name
+          $sums = $files | ForEach-Object {
+            "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
+          }
+          [IO.File]::WriteAllText("$PWD\SHA256SUMS", (($sums -join "`n") + "`n"))
+          # gh reports progress on stderr; its exit code decides.
+          $ErrorActionPreference = 'Continue'
+          gh release create $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --title $env:GITHUB_REF_NAME --generate-notes @($files.Name) SHA256SUMS
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
