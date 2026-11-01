@@ -696,6 +696,18 @@ fn real_directory(cwd: PathBuf) -> PathBuf {
     }
 }
 
+/// Commands this program implements itself; git answers `-h` for the rest.
+const OWN_COMMANDS: [&str; 8] = [
+    "add", "remove", "finish", "doctor", "env", "setup", "init", "migrate",
+];
+
+/// `-h` or `--help` among a command's own options, before any `--`.
+fn asks_for_help(args: &[String]) -> bool {
+    args.iter()
+        .take_while(|arg| *arg != "--")
+        .any(|arg| arg == "-h" || arg == "--help")
+}
+
 fn run() -> Result<ExitCode, String> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
@@ -703,6 +715,10 @@ fn run() -> Result<ExitCode, String> {
         return Ok(ExitCode::from(129));
     }
     let subcommand = args.remove(0);
+    if OWN_COMMANDS.contains(&subcommand.as_str()) && asks_for_help(&args) {
+        print!("{USAGE}");
+        return Ok(ExitCode::SUCCESS);
+    }
     let cwd = real_directory(std::env::current_dir().map_err(|err| err.to_string())?);
     match subcommand.as_str() {
         "add" => run_add(&cwd, args),
@@ -737,5 +753,22 @@ fn main() -> ExitCode {
             eprintln!("fatal: {message}");
             ExitCode::from(128)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::asks_for_help;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|arg| (*arg).to_owned()).collect()
+    }
+
+    #[test]
+    fn help_is_found_among_options_but_not_after_the_separator() {
+        assert!(asks_for_help(&args(&["--help"])));
+        assert!(asks_for_help(&args(&["../wt", "-h"])));
+        assert!(!asks_for_help(&args(&["../wt", "-b", "task"])));
+        assert!(!asks_for_help(&args(&["../wt", "--", "-h"])));
     }
 }

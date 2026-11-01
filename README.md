@@ -100,6 +100,9 @@ switches a project.
 
 `list`, `lock`, `unlock`, `move`, `prune` and `repair` go straight to `git worktree`.
 
+`git multibox -h`, or `-h` after any command, prints the full usage.
+`git multibox --help` does not: git takes it as a request for a manual page.
+
 `add` accepts every `git worktree add` option, plus:
 
 | Option | Meaning |
