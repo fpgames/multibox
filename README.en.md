@@ -56,9 +56,10 @@ git multibox remove ../feature           # or throw it away
 `git multibox doctor` shows what the machine and the repository allow, and
 `git multibox -h` lists every command.
 
-**On Windows, put the project on a Dev Drive.** On NTFS every worktree is a
-full copy. On a Dev Drive, as on macOS, files are shared until they change, so
-a worktree takes seconds and almost no space. `git multibox init` creates one
+**On Windows, put the project on a Dev Drive.** On NTFS a worktree is mostly a
+copy; only caches that are written once are shared, through hard links. On a
+Dev Drive, as on macOS, every file is shared until it changes, so a worktree
+takes seconds and almost no space. `git multibox init` creates one
 and moves the project onto it, once, while you keep working.
 
 ## How it compares
@@ -69,29 +70,31 @@ Details and more results are in [docs/benchmarks.md](docs/benchmarks.md).
 
 | Project, steps | NTFS native | NTFS Multibox | Dev Drive native | Dev Drive Multibox |
 | --- | --- | --- | --- | --- |
-| Unity 6 game, 104,330 files: create and first launch | 1,112 s | **112 s** | 873 s | **80 s** |
-| Disk afterwards | 49.5 GiB | 53.3 GiB | 47.8 GiB | **2.9 GiB** |
+| Unity 6 game, 104,330 files: create and first launch | 1,165 s | **91 s** | 873 s | **80 s** |
+| Disk afterwards | 49.5 GiB | **15.3 GiB** | 47.8 GiB | **2.9 GiB** |
+| Rust workspace, 970 packages: create and build the tests | 238 s | **156 s** | 233 s | **148 s** |
+| Disk afterwards | 30.2 GiB | **27.5 GiB** | 30.3 GiB | **24.5 GiB** |
 | pnpm monorepo with Rust helpers: create, install, type check, dev build, installer | 485 s | **384 s** | 458 s | **319 s** |
 | Disk afterwards | 4.9 GiB | 4.9 GiB | 4.6 GiB | **1.9 GiB** |
-| Rust workspace, 970 packages: create and build the tests | 242 s | 236 s | 231 s | **180 s** |
-| Disk afterwards | 30.2 GiB | 30.2 GiB | 30.5 GiB | **23.6 GiB** |
 
 - The Unity worktree opened after one import instead of 56,961.
+- The Rust worktree compiled the workspace's own 22 packages; a native one
+  compiles 581.
+- On NTFS, Unity's import results and the compiled Rust dependencies are
+  hard-linked to the source instead of copied: their tools write each file once
+  and never change it.
 - Merging gives the same commits as with native worktrees, to the commit id.
   `finish` does merge, removal and branch deletion in one step.
 - `git worktree remove` failed on the monorepo, whose `node_modules/` paths are
   too long for it; `git multibox remove` did not.
+- The monorepo was measured with the previous version. On NTFS this one also
+  carries its Rust helpers' dependencies, which has not been measured yet.
 
 Where it is not better:
 
-- On NTFS, a Unity worktree takes about 8% more disk than a native one: it
-  carries all of the source's `Library/`, while a fresh import writes only what
-  it needs.
-- On a Dev Drive, creating a Unity worktree takes longer than a native
-  checkout, 47 to 103 seconds against 30 to 67, because it clones the
-  `Library/` as well. The first launch then saves more than ten minutes.
-- On NTFS, Rust and pnpm caches stay behind by default to save disk, so builds
-  take as long as in a native worktree.
+- On NTFS, pnpm's `node_modules/` stays behind: pnpm installs from a store
+  shared between projects, so there is little to save, and the install takes
+  as long as in a native worktree.
 
 ## Settings
 

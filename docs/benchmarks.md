@@ -272,6 +272,84 @@ first failed: each removal swept up the others' trash and they collided. After
 the fix, 41 of 42 concurrent removals reported success; the one that did not
 had still deleted everything, and the failure did not recur in 24 attempts.
 
+## Write-once caches and the project's own Rust units
+
+Two changes, then the Rust workspace and the Unity game measured again on the
+same workstation, two rounds each unless noted.
+
+**What stays behind.** A Rust worktree used to carry the workspace's own
+compiled outputs, which its rebuild then overwrote: in the Rust workspace,
+5.3 GiB of its own libraries and about 17 GiB of test binaries and debug
+information, against 3.4 GiB of dependencies' libraries. They now stay behind.
+On the Dev Drive this also ended 30 rebuilds of dependencies in every new
+worktree: a build compiles the 22 local packages and nothing else.
+
+**What is written once.** Where files are copied, files that are never changed
+in place are now hard-linked to the source. Before deciding which, their
+timestamps were read in long-used projects:
+
+- In a Unity project's `Library/Artifacts/`, written by the editor over its
+  whole life, the last write of each of 93,065 import results came at most
+  0.2 seconds after its creation. `Library/PackageCache/` keeps the times
+  from the package archives, so says nothing, and is still copied.
+- In the Rust workspace's target directory, used for months, every library or
+  metadata file changed after its creation belonged to the workspace's own
+  units; no dependency's was.
+
+Then both were tried where it could go wrong:
+
+- **Rust.** In a worktree sharing 1,198 dependency libraries with its source,
+  the fingerprints of serde, regex, memchr and itoa, 12 units in all, were
+  deleted, so that Cargo rebuilt them and everything above them: 157
+  packages. rustc replaced each output with a new file, leaving one link on
+  each side, and the SHA-256 of all 1,239 libraries in the source was
+  unchanged.
+- **Unity.** A worktree on NTFS sharing 94,430 import results was launched
+  three times, with two JSON files edited and six assets added in between, which
+  made it import nine of them. The source's import results kept their sizes and
+  write times, every one. The worktree was then removed while an editor had the
+  source open and was importing into it; it went in one pass, with nothing left.
+
+Hard-linking was also timed, on 10,000 import results of 420 KB on average,
+16 threads:
+
+| | Copy (NTFS) or clone (Dev Drive) | Hard link |
+| --- | --- | --- |
+| NTFS | 0.12 to 0.19 ms per file, data still to be written | 0.09 to 0.10 ms |
+| Dev Drive | 0.15 ms | 0.09 to 0.12 ms |
+
+On the Dev Drive the gain is too small to give up independent clones, so
+reflink volumes do not share; it is on NTFS, where a copy writes the data,
+that sharing pays.
+
+**The Rust workspace**, create, then `cargo test --no-run`:
+
+| | NTFS native | NTFS Multibox | Dev Drive native | Dev Drive Multibox |
+| --- | --- | --- | --- | --- |
+| Create | 6.5 s | 6.0 s | 6.2 s | 2.7 s |
+| Build | 231 s | 150 s | 227 s | 145 s |
+| Crates compiled | 581 | 22 | 581 | 22 |
+| Disk after the build | 30.2 GiB | 27.5 GiB | 30.3 GiB | 24.5 GiB |
+| Removal | 5.1 s | 3.3 s | 22.9 s | 5.3 s |
+
+Before, on NTFS, Multibox left `target/` behind and built in 234 seconds.
+
+**The Unity game** on NTFS, cloned from a checkout on NTFS, create, then the
+first batch-mode launch:
+
+| | Native | Multibox, before | Multibox, sharing |
+| --- | --- | --- | --- |
+| Create | 68 s | 59 s | 34 to 38 s |
+| First launch | 1,097 s, 56,961 imports | 53 s, 1 import | 55 to 56 s, 1 import |
+| Disk after launch | 49.5 GiB | 53.3 GiB | 15.3 GiB |
+| Removal | 14.5 s | 8.2 s | 7.8 s |
+
+On the Dev Drive nothing changed for Unity, but its creation time was measured
+again, native and Multibox alternating, three rounds each: 49 to 68 seconds,
+56.9 on average, natively, and 49.9 to 50.4, 50.2 on average, with Multibox.
+The earlier comparison, which had Multibox slower, set rounds from different
+times against each other; a single run right after other work took 103 seconds.
+
 ## Still to measure
 
 - Native import time and reopening on macOS.
