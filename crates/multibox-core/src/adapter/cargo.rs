@@ -1,5 +1,6 @@
 use super::{Adapter, Project};
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 const MANIFEST: &str = "Cargo.toml";
@@ -97,14 +98,16 @@ impl Adapter for Cargo {
             .filter_map(|prefix| {
                 // A workspace root has the lockfile; its members do not.
                 let lock = fs::read_to_string(worktree.join(prefix).join(LOCKFILE)).ok()?;
+                let root = worktree.join(prefix);
                 let mut targets = vec![DEFAULT_TARGET.to_owned()];
-                targets.extend(other_target_dirs(&worktree.join(prefix)));
+                targets.extend(other_target_dirs(&root));
                 Some(Project {
                     engine: "cargo",
                     root: prefix.trim_end_matches('/').to_owned(),
                     version: None,
                     local_packages: local_packages(&lock),
                     verified_files: Vec::new(),
+                    left_behind: own_units(worktree, &root, &targets),
                     cache_dirs: targets,
                 })
             })
@@ -138,8 +141,13 @@ impl Adapter for Cargo {
                 for cache in ["build", ".fingerprint"] {
                     patterns.push(format!("{target}/**/{cache}/{name}-{UNIT_HASH}/"));
                 }
+                // Their outputs are compiled again anyway, under the same names.
+                let krate = name.replace('-', "_");
+                patterns.push(format!("{target}/**/deps/{krate}-{UNIT_HASH}.*"));
+                patterns.push(format!("{target}/**/deps/lib{krate}-{UNIT_HASH}.*"));
             }
         }
+        patterns.extend(project.left_behind.iter().cloned());
         patterns
             .iter()
             .map(|path| format!("/{}", project.path(path)))
@@ -151,6 +159,150 @@ impl Adapter for Cargo {
     fn expensive(&self, project: &Project) -> Vec<String> {
         self.includes(project)
     }
+}
+
+/// Directories of a target directory that hold compiled units: `debug`, or
+/// `x86_64-pc-windows-msvc/debug` when cross-compiling.
+fn profile_dirs(target: &Path) -> Vec<String> {
+    let children = |dir: &Path| -> Vec<String> {
+        fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .collect()
+    };
+    let mut found = Vec::new();
+    for name in children(target) {
+        if target.join(&name).join("deps").is_dir() {
+            found.push(name.clone());
+        }
+        for inner in children(&target.join(&name)) {
+            if target.join(&name).join(&inner).join("deps").is_dir() {
+                found.push(format!("{name}/{inner}"));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// The paths a Makefile rule depends on, as rustc writes them: separated by
+/// spaces, with a space inside a path escaped by a backslash.
+fn rule_sources(line: &str) -> Vec<String> {
+    let Some((_, sources)) = line.trim_end().split_once(": ") else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    let mut current = String::new();
+    let mut chars = sources.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if chars.peek() == Some(&' ') => {
+                current.push(' ');
+                chars.next();
+            }
+            ' ' | '\t' => {
+                if !current.is_empty() {
+                    paths.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        paths.push(current);
+    }
+    paths
+}
+
+/// A path in a form that compares reliably: on Windows with forward slashes,
+/// without a verbatim prefix and in lower case.
+fn comparable(path: &str) -> String {
+    if cfg!(windows) {
+        let path = path.strip_prefix(r"\\?\").unwrap_or(path);
+        path.replace('\\', "/").trim_end_matches('/').to_lowercase()
+    } else {
+        path.trim_end_matches('/').to_owned()
+    }
+}
+
+/// The metadata hash at the end of a unit's name, as in `serde-0123456789abcdef`.
+fn unit_hash(unit: &str) -> Option<&str> {
+    let (_, hash) = unit.rsplit_once('-')?;
+    (hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_hexdigit())).then_some(hash)
+}
+
+/// Units compiled from the project's own sources, found in the dep-info file
+/// rustc writes beside each unit's outputs in `deps/`. Cargo hands rustc the
+/// sources of workspace members relative to the workspace, and those of
+/// everything else as absolute paths, so a relative source, or an absolute one
+/// inside the repository other than code generated into a target directory,
+/// makes a unit the project's own. This also catches tests, binaries and
+/// libraries named differently from their package.
+///
+/// Returns patterns for the unit's outputs and fingerprint, relative to `root`.
+fn own_units(worktree: &Path, root: &Path, targets: &[String]) -> Vec<String> {
+    let repository = comparable(&worktree.to_string_lossy());
+    let target_roots: Vec<String> = targets
+        .iter()
+        .map(|target| comparable(&root.join(target).to_string_lossy()))
+        .collect();
+    let inside = |path: &str, dir: &str| {
+        path.strip_prefix(dir)
+            .is_some_and(|rest| rest.starts_with('/'))
+    };
+    let is_own = |source: &str| {
+        if !Path::new(source).is_absolute() {
+            return true;
+        }
+        let source = comparable(source);
+        inside(&source, &repository) && !target_roots.iter().any(|dir| inside(&source, dir))
+    };
+
+    let mut patterns = Vec::new();
+    for target in targets {
+        for profile in profile_dirs(&root.join(target)) {
+            let deps = root.join(target).join(&profile).join("deps");
+            for entry in fs::read_dir(&deps)
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+            {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let Some(unit) = name.strip_suffix(".d") else {
+                    continue;
+                };
+                let Some(hash) = unit_hash(unit) else {
+                    continue;
+                };
+                // Unit names end up inside glob patterns.
+                if !unit
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                {
+                    continue;
+                }
+                let Ok(file) = fs::File::open(entry.path()) else {
+                    continue;
+                };
+                let mut rule = String::new();
+                if BufReader::new(file).read_line(&mut rule).is_err() {
+                    continue;
+                }
+                if rule_sources(&rule).iter().any(|source| is_own(source)) {
+                    let dir = format!("{target}/{profile}");
+                    patterns.push(format!("{dir}/deps/{unit}.*"));
+                    patterns.push(format!("{dir}/deps/lib{unit}.*"));
+                    patterns.push(format!("{dir}/.fingerprint/*-{hash}/"));
+                }
+            }
+        }
+    }
+    patterns.sort();
+    patterns.dedup();
+    patterns
 }
 
 /// Packages the lockfile lists without a `source` are built from paths: the
@@ -223,6 +375,7 @@ source = "git+https://example.com/forked#abc"
             local_packages: local_packages(LOCK),
             verified_files: Vec::new(),
             cache_dirs: Vec::new(),
+            left_behind: Vec::new(),
         }
     }
 
@@ -240,6 +393,31 @@ source = "git+https://example.com/forked#abc"
     #[test]
     fn local_packages_are_those_without_a_source() {
         assert_eq!(local_packages(LOCK), ["app", "shared"]);
+    }
+
+    #[test]
+    fn reads_the_sources_of_a_dep_info_rule() {
+        assert_eq!(
+            rule_sources(
+                "E:\\p\\.tmp/target\\debug\\deps\\core-0123456789abcdef.d: core\\src\\lib.rs core\\src\\a.rs\r\n"
+            ),
+            ["core\\src\\lib.rs", "core\\src\\a.rs"]
+        );
+        assert_eq!(
+            rule_sources("/p/target/debug/deps/x.d: /home/me/My\\ Crates/x/src/lib.rs\n"),
+            ["/home/me/My Crates/x/src/lib.rs"]
+        );
+        assert!(rule_sources("no rule here\n").is_empty());
+    }
+
+    #[test]
+    fn unit_names_end_in_a_metadata_hash() {
+        assert_eq!(
+            unit_hash("serde_json-0123456789abcdef"),
+            Some("0123456789abcdef")
+        );
+        assert_eq!(unit_hash("serde_json"), None);
+        assert_eq!(unit_hash("build-script-build"), None);
     }
 
     #[test]

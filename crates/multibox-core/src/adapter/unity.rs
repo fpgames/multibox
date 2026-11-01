@@ -28,6 +28,7 @@ impl Adapter for Unity {
                     local_packages: Vec::new(),
                     verified_files: Vec::new(),
                     cache_dirs: Vec::new(),
+                    left_behind: Vec::new(),
                 }
             })
             .collect()
@@ -243,6 +244,7 @@ mod tests {
             local_packages: Vec::new(),
             verified_files: Vec::new(),
             cache_dirs: Vec::new(),
+            left_behind: Vec::new(),
         };
         assert!(
             Unity
@@ -256,6 +258,7 @@ mod tests {
             local_packages: Vec::new(),
             verified_files: Vec::new(),
             cache_dirs: Vec::new(),
+            left_behind: Vec::new(),
         };
         assert!(Unity.includes(&root).contains(&"/Library/".to_owned()));
     }

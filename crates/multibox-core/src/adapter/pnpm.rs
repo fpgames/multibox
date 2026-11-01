@@ -28,6 +28,7 @@ impl Adapter for Pnpm {
                 local_packages: Vec::new(),
                 verified_files: Vec::new(),
                 cache_dirs: Vec::new(),
+                left_behind: Vec::new(),
             })
             .collect()
     }

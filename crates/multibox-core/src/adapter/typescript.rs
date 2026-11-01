@@ -49,6 +49,7 @@ impl Adapter for TypeScript {
                 local_packages: Vec::new(),
                 verified_files: files.into_iter().collect(),
                 cache_dirs: Vec::new(),
+                left_behind: Vec::new(),
             })
             .collect()
     }

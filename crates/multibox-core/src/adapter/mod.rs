@@ -41,6 +41,9 @@ pub struct Project {
     /// Cache directories found on disk during detection, relative to the
     /// project root.
     pub cache_dirs: Vec<String>,
+    /// Paths found on disk during detection that must stay behind, as
+    /// gitignore patterns relative to the project root.
+    pub left_behind: Vec<String>,
 }
 
 impl Project {

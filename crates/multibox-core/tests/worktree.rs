@@ -880,9 +880,42 @@ fn cargo_repo() -> (TempDir, PathBuf) {
         "target/debug/build/app-2222222222222222/out/generated.rs",
         "target/debug/incremental/app-3x4y/s-abc/query-cache.bin",
         "target/debug/app.exe",
+        "target/debug/deps/retry_http-3333333333333333.exe",
     ] {
         write(&repo, rel, "built\n");
     }
+
+    // Dep-info as rustc writes it: workspace sources relative to the
+    // workspace, everything else absolute, spaces escaped.
+    let rule = |unit: &str, sources: &[PathBuf]| {
+        let target = repo.join(format!("target/debug/deps/{unit}.d"));
+        let sources: Vec<String> = sources
+            .iter()
+            .map(|path| path.display().to_string().replace(' ', "\\ "))
+            .collect();
+        format!("{}: {}\n", target.display(), sources.join(" "))
+    };
+    let registry = temp.path().join("registry/serde-1.0.0/src/lib.rs");
+    let generated = repo.join("target/debug/build/serde-fedcba9876543210/out/generated.rs");
+    write(
+        &repo,
+        "target/debug/deps/serde-0123456789abcdef.d",
+        &rule("serde-0123456789abcdef", &[registry, generated]),
+    );
+    write(
+        &repo,
+        "target/debug/deps/app-1111111111111111.d",
+        &rule("app-1111111111111111", &[PathBuf::from("app/src/lib.rs")]),
+    );
+    // An integration test of `app`, named after its file.
+    write(
+        &repo,
+        "target/debug/deps/retry_http-3333333333333333.d",
+        &rule(
+            "retry_http-3333333333333333",
+            &[PathBuf::from("app/tests/retry_http.rs")],
+        ),
+    );
     (temp, repo)
 }
 
@@ -921,14 +954,31 @@ fn a_carried_target_never_includes_local_packages() {
         wt.join("target/debug/build/serde-fedcba9876543210/output")
             .exists()
     );
+    // Its dep-info names code generated into the target directory, which
+    // does not make it the project's own.
+    assert!(
+        wt.join("target/debug/deps/serde-0123456789abcdef.d")
+            .exists()
+    );
 
-    // Built from the project: without a fingerprint, Cargo rebuilds it here.
+    // Built from the project: without a fingerprint, Cargo rebuilds it here,
+    // and its outputs would only be overwritten.
     assert!(
         !wt.join("target/debug/.fingerprint/app-1111111111111111")
             .exists()
     );
     assert!(!wt.join("target/debug/build/app-2222222222222222").exists());
     assert!(!wt.join("target/debug/incremental").exists());
+    assert!(
+        !wt.join("target/debug/deps/libapp-1111111111111111.rlib")
+            .exists()
+    );
+    assert!(!wt.join("target/debug/deps/app-1111111111111111.d").exists());
+    // A test named after its file is found by its dep-info alone.
+    assert!(
+        !wt.join("target/debug/deps/retry_http-3333333333333333.exe")
+            .exists()
+    );
 }
 
 /// A repository holding a pnpm workspace, installed once.
