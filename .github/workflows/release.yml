@@ -13,20 +13,24 @@ permissions:
 jobs:
   windows:
     runs-on: [self-hosted, Windows, X64]
+    # cmd, because Windows PowerShell can turn cargo's progress on stderr into
+    # a failure.
+    defaults:
+      run:
+        shell: cmd
     steps:
       - uses: actions/checkout@v4
-      # cmd, because Windows PowerShell can turn cargo's progress on stderr
-      # into a failure.
       - run: cargo build --release --locked -p git-multibox
-        shell: cmd
-      # The machine's execution policy forbids script files; this step only.
+      # Windows' own tar writes the zip: Compress-Archive in Windows PowerShell
+      # separates paths with backslashes, which the format does not allow.
       - name: Package
-        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command ". '{0}'"
         run: |
-          $name = "git-multibox-$env:GITHUB_REF_NAME-x86_64-pc-windows-msvc"
-          New-Item -ItemType Directory -Force "dist/$name" | Out-Null
-          Copy-Item target/release/git-multibox.exe, README.md, LICENSE-MIT, LICENSE-APACHE "dist/$name"
-          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip" -Force
+          set "NAME=git-multibox-%GITHUB_REF_NAME%-x86_64-pc-windows-msvc"
+          mkdir "dist\%NAME%" || exit /b 1
+          for %%f in (target\release\git-multibox.exe README.md LICENSE-MIT LICENSE-APACHE) do (
+            copy /y "%%f" "dist\%NAME%\" >nul || exit /b 1
+          )
+          "%SystemRoot%\System32\tar.exe" -a -cf "dist\%NAME%.zip" -C dist "%NAME%"
       - uses: actions/upload-artifact@v4
         with:
           name: windows
