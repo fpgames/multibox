@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "git-multibox"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "multibox-clone",
  "multibox-core",
@@ -225,7 +225,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "multibox-clone"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "tempfile",
@@ -234,7 +234,7 @@ dependencies = [
 
 [[package]]
 name = "multibox-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ignore",
  "libc",
