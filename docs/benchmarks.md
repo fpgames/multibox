@@ -244,12 +244,16 @@ Drive copy throughout: create, then the first batch-mode launch.
 | Disk after launch | 49.5 GiB | 56.1 GiB | 47.8 GiB | 2.9 GiB |
 | Removal | 14.6 s | 8.2 s | 19.5 s | 11.9 s |
 
-On NTFS a Multibox worktree takes 13% more disk than a native one after its
+On NTFS a Multibox worktree took 13% more disk than a native one after its
 import: the carried `Library/` holds what the source accumulated, superseded
 artifacts and a 2.8 GiB search index among them, and a fresh import writes
-only what it needs. In repeated cycles without the launch, creating a Unity
-worktree on the Dev Drive took 48 to 85 seconds against 30 to 53 natively,
-because the clone carries 287,000 files to git's 104,000.
+only what it needs. Copy mode now leaves the search index behind. One more
+round on NTFS, cloned from the Dev Drive copy, took 59 seconds to create and
+53 to launch, still with one import, and 53.3 GiB afterwards: 7.7% more than
+native. In repeated cycles without the launch, creating a Unity worktree on
+the Dev Drive took 48 to 85 seconds against 30 to 53 natively, because the
+clone carries 287,000 files to git's 104,000. A later one took 103 seconds,
+by then with 102 GiB of caches in the source; it still used 1.8 GiB.
 
 The first `git status` took 0.07 to 0.13 seconds in every Multibox worktree and
 0.37 to 0.80 seconds in native ones.
