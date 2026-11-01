@@ -99,6 +99,12 @@ impl Adapter for Unity {
     /// `Library/TempArtifacts/`; a new result is a new file. In a project of
     /// 93,000 artifacts written over its whole life, none was modified more
     /// than 0.2 seconds after it was created.
+    ///
+    /// `Library/PackageCache/` is not shared. The Package Manager never wrote
+    /// into a shared file: removing, downgrading and restoring packages each
+    /// extracted a new directory. But it holds C# sources that IDEs open, and
+    /// an edit in the worktree reached the source's copy, which the editor only
+    /// reported as an altered immutable package and did not revert.
     fn write_once(&self, project: &Project) -> Vec<String> {
         vec![format!("/{}", project.path("Library/Artifacts/"))]
     }

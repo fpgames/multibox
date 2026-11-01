@@ -274,8 +274,8 @@ had still deleted everything, and the failure did not recur in 24 attempts.
 
 ## Write-once caches and the project's own Rust units
 
-Two changes, then the Rust workspace and the Unity game measured again on the
-same workstation, two rounds each unless noted.
+Two changes, then the Rust workspace, the Unity game and Cindy measured again
+on the same workstation, two rounds each unless noted.
 
 **What stays behind.** A Rust worktree used to carry the workspace's own
 compiled outputs, which its rebuild then overwrote: in the Rust workspace,
@@ -291,7 +291,7 @@ timestamps were read in long-used projects:
 - In a Unity project's `Library/Artifacts/`, written by the editor over its
   whole life, the last write of each of 93,065 import results came at most
   0.2 seconds after its creation. `Library/PackageCache/` keeps the times
-  from the package archives, so says nothing, and is still copied.
+  from the package archives, so says nothing; it was tried separately, below.
 - In the Rust workspace's target directory, used for months, every library or
   metadata file changed after its creation belonged to the workspace's own
   units; no dependency's was.
@@ -309,6 +309,14 @@ Then both were tried where it could go wrong:
   made it import nine of them. The source's import results kept their sizes and
   write times, every one. The worktree was then removed while an editor had the
   source open and was importing into it; it went in one pass, with nothing left.
+- **Unity's package cache.** A worktree also sharing the 39,749 files of
+  `Library/PackageCache/` was launched after removing one package and
+  downgrading another, then after restoring both. Each time the Package
+  Manager extracted a new directory, and the source's files kept their sizes
+  and write times. But a line added to a package's `math.cs` in the worktree
+  appeared in the source's copy at once, and the editor only reported that an
+  immutable package had been altered, without reverting it. The package cache
+  holds C# sources that IDEs open, so it is still copied: 1.6 GiB in this game.
 
 Hard-linking was also timed, on 10,000 import results of 420 KB on average,
 16 threads:
@@ -349,6 +357,32 @@ again, native and Multibox alternating, three rounds each: 49 to 68 seconds,
 56.9 on average, natively, and 49.9 to 50.4, 50.2 on average, with Multibox.
 The earlier comparison, which had Multibox slower, set rounds from different
 times against each other; a single run right after other work took 103 seconds.
+
+**Cindy**, the pnpm monorepo with seven Rust helpers, from the same source as
+in the earlier round: create, `pnpm install`, incremental type check,
+development build until the UI responds, installer. Native and Multibox
+alternated, three rounds each on NTFS and two on the Dev Drive; times are
+averages.
+
+| | NTFS native | NTFS Multibox | Dev Drive native | Dev Drive Multibox |
+| --- | --- | --- | --- | --- |
+| Type check | 108.2 s | 19.8 s | 107.3 s | 17.3 s |
+| Installer | 284.3 s | 235.5 s | 290.5 s | 214.8 s |
+| Rust crates compiled | 425 | 39 | 425 | 39 |
+| All steps | 497 s | 361 s | 498 s | 326 s |
+| Disk after all steps | 5.2 GiB | 3.0 GiB | 4.7 GiB | 1.9 GiB |
+| Removal | failed every time | 9.6 s | failed every time | 5.3 s |
+
+Before, on NTFS, the helpers' `target/` stayed behind, and the installer
+compiled all 425 crates in 271.5 seconds. Now their dependencies' libraries are
+hard-linked, 936 files and 1.5 GiB.
+
+Disk is the median of the rounds. On NTFS one Multibox round measured 9.1 GiB
+and the other two 2.5 and 3.0, while native rounds measured 5.1 to 6.3: free
+space on that drive also moved with other work. On the Dev Drive only the first
+round of each kind counts. The worktree removed before the second went on
+freeing space during it, which made its readings negative. One native
+installer there took 318 seconds, the other 264, as in the earlier round.
 
 ## Still to measure
 

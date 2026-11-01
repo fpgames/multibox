@@ -74,12 +74,13 @@ Details and more results are in [docs/benchmarks.md](docs/benchmarks.md).
 | Disk afterwards | 49.5 GiB | **15.3 GiB** | 47.8 GiB | **2.9 GiB** |
 | Rust workspace, 970 packages: create and build the tests | 238 s | **156 s** | 233 s | **148 s** |
 | Disk afterwards | 30.2 GiB | **27.5 GiB** | 30.3 GiB | **24.5 GiB** |
-| pnpm monorepo with Rust helpers: create, install, type check, dev build, installer | 485 s | **384 s** | 458 s | **319 s** |
-| Disk afterwards | 4.9 GiB | 4.9 GiB | 4.6 GiB | **1.9 GiB** |
+| pnpm monorepo with Rust helpers: create, install, type check, dev build, installer | 497 s | **361 s** | 498 s | **326 s** |
+| Disk afterwards | 5.2 GiB | **3.0 GiB** | 4.7 GiB | **1.9 GiB** |
 
 - The Unity worktree opened after one import instead of 56,961.
 - The Rust worktree compiled the workspace's own 22 packages; a native one
-  compiles 581.
+  compiles 581. The monorepo's installer compiled 39 Rust crates instead of
+  425.
 - On NTFS, Unity's import results and the compiled Rust dependencies are
   hard-linked to the source instead of copied: their tools write each file once
   and never change it.
@@ -87,8 +88,6 @@ Details and more results are in [docs/benchmarks.md](docs/benchmarks.md).
   `finish` does merge, removal and branch deletion in one step.
 - `git worktree remove` failed on the monorepo, whose `node_modules/` paths are
   too long for it; `git multibox remove` did not.
-- The monorepo was measured with the previous version. On NTFS this one also
-  carries its Rust helpers' dependencies, which has not been measured yet.
 
 Where it is not better:
 

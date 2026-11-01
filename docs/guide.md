@@ -73,7 +73,8 @@ off. The measurements behind these rules are in
 - **Nothing an adapter carries reaches back into the source.** Links into the
   source tree follow the clone, files that record the project's path are
   rewritten, and build output compiled from the project's own sources is rebuilt.
-  Hard-linked files are only those their tools never change in place.
+  Hard-linked files are only those their tools never change in place and
+  nobody opens to edit.
 - **Copy mode is frugal.** Without reflinks every copied byte costs disk space,
   so large caches stay behind unless sharing makes them cheap, or
   `.worktreeinclude` or `.multibox.toml` asks for them. Caches a reinstall
@@ -153,7 +154,8 @@ with everything that identifies the source editor (see below). In copy mode
 `Library/BuildCache/` and the search index in `Library/Search/` stay behind
 too: only player builds read the first, and the editor rebuilds the second in
 the background. The import results in `Library/Artifacts/`, most of the
-`Library/`, are written once and hard-linked where files are copied.
+`Library/`, are written once and hard-linked where files are copied. The
+package cache is copied all the same: it holds C# sources that IDEs open.
 
 **Rust** workspaces are found by a tracked `Cargo.toml` with `Cargo.lock` beside
 it. Compiled dependencies in `target/` come along: `deps/`, `build/` and
