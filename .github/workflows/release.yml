@@ -19,8 +19,9 @@ jobs:
       # into a failure.
       - run: cargo build --release --locked -p git-multibox
         shell: cmd
+      # The machine's execution policy forbids script files; this step only.
       - name: Package
-        shell: powershell
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command ". '{0}'"
         run: |
           $name = "git-multibox-$env:GITHUB_REF_NAME-x86_64-pc-windows-msvc"
           New-Item -ItemType Directory -Force "dist/$name" | Out-Null
@@ -55,19 +56,19 @@ jobs:
     runs-on: [self-hosted, Windows, X64]
     permissions:
       contents: write
-    defaults:
-      run:
-        shell: powershell
     steps:
+      # A directory of this job's own: the workspace holds the Windows build's.
       - uses: actions/download-artifact@v4
         with:
-          path: dist
+          path: ${{ runner.temp }}/release
           merge-multiple: true
       - name: Publish
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command ". '{0}'"
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_DIR: ${{ runner.temp }}/release
         run: |
-          Set-Location dist
+          Set-Location $env:RELEASE_DIR
           $files = Get-ChildItem -File | Where-Object { $_.Name -ne 'SHA256SUMS' } | Sort-Object Name
           $sums = $files | ForEach-Object {
             "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
