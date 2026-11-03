@@ -1,4 +1,5 @@
 use super::{Adapter, Project};
+use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -268,7 +269,10 @@ fn unit_hash(unit: &str) -> Option<&str> {
 /// makes a unit the project's own. This also catches tests, binaries and
 /// libraries named differently from their package.
 ///
-/// Returns patterns for the unit's outputs and fingerprint, relative to `root`.
+/// Returns the paths of the units' outputs and fingerprints, relative to
+/// `root`. They are literal paths rather than globs: a target directory used
+/// for months holds thousands of stale units, and as many globs made the rules
+/// too large to compile.
 fn own_units(worktree: &Path, root: &Path, targets: &[String]) -> Vec<String> {
     let repository = comparable(&worktree.to_string_lossy());
     let target_roots: Vec<String> = targets
@@ -287,30 +291,28 @@ fn own_units(worktree: &Path, root: &Path, targets: &[String]) -> Vec<String> {
         inside(&source, &repository) && !target_roots.iter().any(|dir| inside(&source, dir))
     };
 
-    let mut patterns = Vec::new();
+    let mut paths = Vec::new();
     for target in targets {
         for profile in profile_dirs(&root.join(target)) {
-            let deps = root.join(target).join(&profile).join("deps");
-            for entry in fs::read_dir(&deps)
-                .into_iter()
-                .flatten()
-                .filter_map(Result::ok)
-            {
-                let name = entry.file_name().to_string_lossy().into_owned();
+            let dir = root.join(target).join(&profile);
+            let names = |sub: &str| -> Vec<String> {
+                fs::read_dir(dir.join(sub))
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Result::ok)
+                    .filter_map(|entry| entry.file_name().into_string().ok())
+                    .collect()
+            };
+            let deps = names("deps");
+            let mut units = HashSet::new();
+            for name in &deps {
                 let Some(unit) = name.strip_suffix(".d") else {
                     continue;
                 };
-                let Some(hash) = unit_hash(unit) else {
-                    continue;
-                };
-                // Unit names end up inside glob patterns.
-                if !unit
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-                {
+                if unit_hash(unit).is_none() {
                     continue;
                 }
-                let Ok(file) = fs::File::open(entry.path()) else {
+                let Ok(file) = fs::File::open(dir.join("deps").join(name)) else {
                     continue;
                 };
                 let mut rule = String::new();
@@ -318,17 +320,42 @@ fn own_units(worktree: &Path, root: &Path, targets: &[String]) -> Vec<String> {
                     continue;
                 }
                 if rule_sources(&rule).iter().any(|source| is_own(source)) {
-                    let dir = format!("{target}/{profile}");
-                    patterns.push(format!("{dir}/deps/{unit}.*"));
-                    patterns.push(format!("{dir}/deps/lib{unit}.*"));
-                    patterns.push(format!("{dir}/.fingerprint/*-{hash}/"));
+                    units.insert(unit);
+                }
+            }
+            if units.is_empty() {
+                continue;
+            }
+            let hashes: HashSet<&str> = units.iter().filter_map(|unit| unit_hash(unit)).collect();
+            let prefix = format!("{target}/{profile}");
+            // A unit's outputs are named after it, libraries with a `lib`
+            // prefix, and end in one or more extensions.
+            for name in &deps {
+                let stem = name.split('.').next().unwrap_or_default();
+                if units.contains(stem)
+                    || stem
+                        .strip_prefix("lib")
+                        .is_some_and(|unit| units.contains(unit))
+                {
+                    paths.push(format!("{prefix}/deps/{name}"));
+                }
+            }
+            for name in names(".fingerprint") {
+                if name
+                    .rsplit_once('-')
+                    .is_some_and(|(_, hash)| hashes.contains(hash))
+                {
+                    paths.push(format!("{prefix}/.fingerprint/{name}/"));
                 }
             }
         }
     }
-    patterns.sort();
-    patterns.dedup();
-    patterns
+    // Anything a glob could read as a wildcard or an escape would no longer
+    // name a single path.
+    paths.retain(|path| !path.contains(['*', '?', '[', ']', '{', '}', '\\']));
+    paths.sort();
+    paths.dedup();
+    paths
 }
 
 /// Packages the lockfile lists without a `source` are built from paths: the

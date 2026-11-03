@@ -230,9 +230,10 @@ fn run_add(cwd: &Path, args: Vec<String>) -> Result<ExitCode, String> {
         }
         return Ok(ExitCode::SUCCESS);
     }
+    // Shared files are counted among the cached ones, not added to them.
     let sharing = if summary.shared_files > 0 {
         format!(
-            "; {} cached files ({:.1} GiB) shared with the source through hard links",
+            ", {} of them ({:.1} GiB) shared with the source through hard links",
             summary.shared_files,
             gib(summary.shared_bytes)
         )

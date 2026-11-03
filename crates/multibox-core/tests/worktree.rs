@@ -981,6 +981,37 @@ fn a_carried_target_never_includes_local_packages() {
     );
 }
 
+#[test]
+fn a_target_directory_full_of_stale_local_units_still_works() {
+    let (_temp, repo) = cargo_repo();
+    write(&repo, ".worktreeinclude", "target/\n");
+    // Every rebuild of a changed test leaves its old unit behind. A workspace
+    // used for months had 3,400, and one glob each made the rules too large
+    // to compile.
+    for n in 0..4000u64 {
+        let unit = format!("retry_http-{n:016x}");
+        write(
+            &repo,
+            &format!("target/debug/deps/{unit}.d"),
+            &format!("{unit}: app/tests/retry_http.rs\n"),
+        );
+    }
+    add(&repo, &copy_mode("../wt"), &Silent).unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+    assert!(
+        wt.join("target/debug/deps/libserde-0123456789abcdef.rlib")
+            .exists()
+    );
+    assert!(
+        !wt.join("target/debug/deps/retry_http-0000000000000fff.d")
+            .exists()
+    );
+    assert!(
+        !wt.join("target/debug/deps/retry_http-3333333333333333.exe")
+            .exists()
+    );
+}
+
 /// A repository holding a pnpm workspace, installed once.
 fn pnpm_repo() -> (TempDir, PathBuf) {
     let temp = TempDir::new().unwrap();
