@@ -193,6 +193,25 @@ pub fn running_editor(worktree: &Path, project: &Project) -> Option<Editor> {
     adapter_for(project).and_then(|adapter| adapter.running_editor(worktree, project))
 }
 
+pub(crate) fn unity_datastore_in_use(worktree: &Path, project: &Project) -> bool {
+    project.engine == "unity" && unity::datastore_in_use(&worktree.join(&project.root))
+}
+
+pub(crate) fn unity_cache_version_warning(worktree: &Path, project: &Project) -> Option<String> {
+    let root = worktree.join(&project.root);
+    if project.engine != "unity" || !root.join("Library").is_dir() {
+        return None;
+    }
+    let source = project.version.as_deref()?;
+    let target = unity::editor_version(&root)?;
+    (source != target).then(|| {
+        format!(
+            "Unity Library at {} came from a project on {source}; this branch uses {target} and may reimport assets",
+            root.display()
+        )
+    })
+}
+
 /// Environment for tools running in `worktree`. A variable claimed by two
 /// projects is dropped: silently picking one could send commands to the wrong
 /// editor, which is exactly what these variables exist to prevent.

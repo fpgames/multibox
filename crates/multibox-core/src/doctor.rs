@@ -200,6 +200,13 @@ fn check_repository(report: &mut Diagnosis, cwd: &Path) {
             continue;
         }
         report.push("project", Level::Ok, name);
+        if adapter::unity_datastore_in_use(&repo.worktree, &project) {
+            report.push(
+                "datastore",
+                Level::Info,
+                format!("Unity DataStore still has its database open at {root}"),
+            );
+        }
         if let Some(editor) = adapter::running_editor(&repo.worktree, &project) {
             let pid = editor
                 .process_id

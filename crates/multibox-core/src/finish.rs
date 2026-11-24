@@ -3,7 +3,7 @@ use crate::config::Config;
 use crate::git::{self, Repo};
 use crate::index::Index;
 use crate::remove::{
-    RemoveOptions, RemoveOutcome, discover_worktree, refuse_if_editor_open, remove, same_path,
+    RemoveOptions, RemoveOutcome, discover_worktree, refuse_if_unity_in_use, remove, same_path,
 };
 use crate::{Error, Result};
 use std::path::Path;
@@ -130,7 +130,7 @@ pub fn finish(cwd: &Path, options: &FinishOptions) -> Result<FinishOutcome> {
             target.worktree.display()
         )));
     }
-    refuse_if_editor_open(&task)?;
+    refuse_if_unity_in_use(&task, false)?;
     let config = Config::load(&target.worktree);
 
     let merged_before = git::quiet(

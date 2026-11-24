@@ -47,16 +47,22 @@ pub(crate) fn discover_worktree(dir: &Path, shown: &str) -> Result<Repo> {
     Ok(repo)
 }
 
-pub(crate) fn refuse_if_editor_open(repo: &Repo) -> Result<()> {
+pub(crate) fn refuse_if_unity_in_use(repo: &Repo, force_editor: bool) -> Result<()> {
     let Ok(index) = Index::read(&repo.index_path(), repo.hash_len) else {
         return Ok(());
     };
     let tracked: Vec<&str> = index.entries.iter().map(|e| e.path.as_str()).collect();
     for project in adapter::detect(&repo.worktree, &tracked) {
-        if adapter::running_editor(&repo.worktree, &project).is_some() {
+        if !force_editor && adapter::running_editor(&repo.worktree, &project).is_some() {
             return Err(Error::new(format!(
                 "a {} editor has {} open; close it or use --force",
                 project.engine,
+                repo.worktree.join(&project.root).display()
+            )));
+        }
+        if adapter::unity_datastore_in_use(&repo.worktree, &project) {
+            return Err(Error::new(format!(
+                "Unity DataStore still has its database open in {}; close Unity and retry after DataStore exits",
                 repo.worktree.join(&project.root).display()
             )));
         }
@@ -115,7 +121,6 @@ pub fn remove(cwd: &Path, options: &RemoveOptions) -> Result<RemoveOutcome> {
 
     let repo = discover_worktree(&target, &options.path)?;
     if options.force == 0 {
-        refuse_if_editor_open(&repo)?;
         let dirty = git::output(
             &target,
             &["status", "--porcelain", "--ignore-submodules=none"],
@@ -141,6 +146,7 @@ pub fn remove(cwd: &Path, options: &RemoveOptions) -> Result<RemoveOutcome> {
     // Re-read runtime evidence immediately before changing the directory. This
     // also applies to --force: it only authorizes discarding local changes.
     crate::cindy::refuse_if_in_use(&target)?;
+    refuse_if_unity_in_use(&repo, options.force > 0)?;
     if let Some(trash) = &trash {
         if detach_contents(&target, trash).is_ok() {
             if let Err(err) = git::quiet(cwd, &args) {
@@ -157,6 +163,7 @@ pub fn remove(cwd: &Path, options: &RemoveOptions) -> Result<RemoveOutcome> {
 
     // Something inside is held open, or the fast path does not apply.
     crate::cindy::refuse_if_in_use(&target)?;
+    refuse_if_unity_in_use(&repo, options.force > 0)?;
     git::quiet(cwd, &args)?;
     Ok(RemoveOutcome {
         path: target,

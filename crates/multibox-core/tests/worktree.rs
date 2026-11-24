@@ -459,6 +459,80 @@ fn remove_ignores_a_lockfile_left_by_a_crashed_editor() {
 }
 
 #[test]
+fn add_warns_when_the_carried_unity_library_crosses_editor_versions() {
+    let (_temp, repo) = unity_repo();
+    write(
+        &repo,
+        "client/ProjectSettings/ProjectVersion.txt",
+        "m_EditorVersion: 6000.6.0f1\n",
+    );
+    sh(&repo, &["commit", "-qam", "upgrade editor"]);
+    sh(&repo, &["branch", "upgraded"]);
+    sh(&repo, &["reset", "--hard", "HEAD^"]);
+
+    let outcome = add(&repo, &options("../wt", &["upgraded"]), &Silent).unwrap();
+    assert!(outcome.path.join("client/Library/ArtifactDB").is_file());
+    assert!(
+        outcome
+            .warnings
+            .iter()
+            .any(|warning| { warning.contains("6000.4.10f1") && warning.contains("6000.6.0f1") })
+    );
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+#[test]
+fn an_open_unity_datastore_blocks_finish_and_forced_remove() {
+    let (_temp, repo) = unity_repo();
+    add(&repo, &options("../wt", &["-b", "task"]), &Silent).unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+    let db = "client/Library/DataStore/uds.db";
+    write(&wt, db, "database");
+    fs::write(wt.join("README.md"), "task change").unwrap();
+    sh(&wt, &["commit", "-qam", "task change"]);
+    let original_head = sh(&repo, &["rev-parse", "HEAD"]);
+
+    let mut open = fs::OpenOptions::new();
+    open.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+        open.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+    }
+    let handle = open.open(wt.join(db)).unwrap();
+    let result = finish(
+        &repo,
+        &FinishOptions {
+            path: "../wt".to_owned(),
+            keep_branch: false,
+            merge_args: Vec::new(),
+        },
+    );
+    assert!(
+        result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("Unity DataStore")
+    );
+    assert_eq!(sh(&repo, &["rev-parse", "HEAD"]), original_head);
+    assert!(
+        remove(&repo, &removal("../wt", 1))
+            .unwrap_err()
+            .to_string()
+            .contains("Unity DataStore")
+    );
+    assert_eq!(fs::read_to_string(wt.join(db)).unwrap(), "database");
+
+    drop(handle);
+    let outcome = remove(&repo, &removal("../wt", 1)).unwrap();
+    if let Some(trash) = outcome.trash {
+        purge_trash(&trash).unwrap();
+    }
+}
+
+#[test]
 fn remove_respects_locks() {
     let (_temp, repo) = unity_repo();
     add(&repo, &options("../wt", &["--detach", "--lock"]), &Silent).unwrap();
