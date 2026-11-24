@@ -673,6 +673,11 @@ pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<
                 started.elapsed().as_secs_f32()
             ));
         }
+        warnings.extend(
+            plan.projects
+                .iter()
+                .filter_map(|project| adapter::unity_cache_version_warning(&new.worktree, project)),
+        );
         Ok((new, report))
     })();
 

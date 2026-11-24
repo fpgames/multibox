@@ -18,9 +18,7 @@ impl Adapter for Unity {
             .filter(|prefix| prefix.is_empty() || prefix.ends_with('/'))
             .map(|prefix| {
                 let root = prefix.trim_end_matches('/').to_owned();
-                let version = fs::read_to_string(worktree.join(prefix).join(VERSION_FILE))
-                    .ok()
-                    .and_then(|text| parse_version(&text));
+                let version = editor_version(&worktree.join(prefix));
                 Project {
                     engine: "unity",
                     root,
@@ -182,6 +180,53 @@ fn lockfile_held(path: &Path) -> bool {
     };
     let free = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
     !free
+}
+
+/// DataStore can keep its database open after the Unity editor exits.
+pub(super) fn datastore_in_use(root: &Path) -> bool {
+    datastore_open(&root.join("Library/DataStore/uds.db"))
+}
+
+#[cfg(windows)]
+fn datastore_open(path: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    // Request the access a rename needs without moving the live database.
+    let opened = fs::OpenOptions::new()
+        .access_mode(DELETE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(path);
+    matches!(opened, Err(err) if err.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32))
+}
+
+#[cfg(unix)]
+fn datastore_open(path: &Path) -> bool {
+    use std::process::{Command, Stdio};
+
+    if !path.is_file() {
+        return false;
+    }
+    // A memory-mapped database need not hold an advisory lock.
+    let lsof = if cfg!(target_os = "macos") {
+        "/usr/sbin/lsof"
+    } else {
+        "lsof"
+    };
+    Command::new(lsof)
+        .args(["-t", "--"])
+        .arg(path)
+        .stderr(Stdio::null())
+        .output()
+        .is_ok_and(|output| output.status.success() && !output.stdout.is_empty())
+}
+
+pub(super) fn editor_version(root: &Path) -> Option<String> {
+    let text = fs::read_to_string(root.join(VERSION_FILE)).ok()?;
+    parse_version(&text)
 }
 
 fn parse_version(text: &str) -> Option<String> {
