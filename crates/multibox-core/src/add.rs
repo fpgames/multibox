@@ -440,6 +440,69 @@ fn run_post_checkout(new: &Repo, observer: &dyn Observer) {
     }
 }
 
+/// Removes carried caches that the checked-out commit does not ignore.
+///
+/// The plan picks caches by the source's `.gitignore` files. When the commit
+/// checked out here lacks one of them, as when the source is on a branch that
+/// added a nested `.gitignore`, the copy would sit in the new worktree as
+/// untracked files and make it look dirty from the start. A worktree made a
+/// moment ago has nothing untracked of its own, so whatever git lists here came
+/// from the carry; the source keeps its copy. Directories go through
+/// [`multibox_clone::purge`], which removes links without following them.
+fn drop_unignored(new: &Repo, threads: Option<usize>, warnings: &mut Vec<String>) {
+    let listed = match git::output(
+        &new.worktree,
+        &[
+            "ls-files",
+            "-z",
+            "--others",
+            "--exclude-standard",
+            "--directory",
+            "--no-empty-directory",
+        ],
+    ) {
+        Ok(listed) => listed,
+        Err(err) => {
+            warnings.push(format!(
+                "cannot check the new worktree for untracked files: {err}"
+            ));
+            return;
+        }
+    };
+    let mut dropped = Vec::new();
+    for entry in listed.split('\0').filter(|entry| !entry.is_empty()) {
+        // A configuration kept out of git is carried on purpose; see build_plan.
+        if entry == CONFIG_FILE {
+            continue;
+        }
+        let path = new.worktree.join(entry.trim_end_matches('/'));
+        let removed = if entry.ends_with('/') {
+            multibox_clone::purge(&path, threads).and_then(|report| match report.failures.first() {
+                None => Ok(()),
+                Some(first) => Err(io::Error::other(first.clone())),
+            })
+        } else {
+            // A link to a directory is an entry too; on Windows it needs remove_dir.
+            fs::remove_file(&path).or_else(|err| fs::remove_dir(&path).map_err(|_| err))
+        };
+        match removed {
+            Ok(()) => dropped.push(entry),
+            Err(err) => warnings.push(format!(
+                "{entry} is not ignored on this branch and could not be removed: {err}"
+            )),
+        }
+    }
+    if let Some(first) = dropped.first() {
+        let more = match dropped.len() {
+            1 => String::new(),
+            n => format!(" and {} more", n - 1),
+        };
+        warnings.push(format!(
+            "{first}{more} left behind: the source ignores it, but this branch does not, so it would be untracked here"
+        ));
+    }
+}
+
 fn rollback(cwd: &Path, target: &Path, observer: &dyn Observer) {
     let path = target.to_string_lossy();
     let args = ["worktree", "remove", "--force", path.as_ref()];
@@ -672,6 +735,10 @@ pub fn add(cwd: &Path, options: &AddOptions, observer: &dyn Observer) -> Result<
                 "checked out in {:.1}s",
                 started.elapsed().as_secs_f32()
             ));
+        }
+        // Only now does the worktree hold the checked-out commit's own .gitignore files.
+        if options.carry {
+            drop_unignored(&new, options.threads, &mut warnings);
         }
         warnings.extend(
             plan.projects

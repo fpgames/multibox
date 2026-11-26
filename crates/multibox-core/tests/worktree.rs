@@ -264,6 +264,52 @@ fn checks_out_a_different_commit() {
     assert!(wt.join("README.md").exists());
 }
 
+/// The source branch ignores a cache through a `.gitignore` the checked-out
+/// branch does not have. Carried anyway, it would arrive as untracked files and
+/// keep a brand new worktree from being archived.
+#[test]
+fn caches_the_checked_out_branch_does_not_ignore_stay_behind() {
+    let (_temp, repo) = unity_repo();
+    sh(&repo, &["checkout", "-q", "-b", "ugc"]);
+    // A folder only this branch has, and one both branches track.
+    write(&repo, "client/Assets/Ugc/.gitignore", "Dev/\nDev.meta\n");
+    write(&repo, "client/Assets/Ugc/level.txt", "only on ugc\n");
+    write(&repo, "client/Assets/deep/.gitignore", "Cache/\n");
+    sh(&repo, &["add", "."]);
+    sh(&repo, &["commit", "-q", "-m", "ugc"]);
+    write(&repo, "client/Assets/Ugc/Dev/big.asset", "dev build\n");
+    write(&repo, "client/Assets/Ugc/Dev.meta", "meta\n");
+    write(&repo, "client/Assets/deep/Cache/baked.bin", "baked\n");
+
+    let outcome = add(
+        &repo,
+        &options("../wt", &["-b", "feature", "master"]),
+        &Silent,
+    )
+    .unwrap();
+    let wt = repo.parent().unwrap().join("wt");
+
+    assert_eq!(status(&wt), "");
+    assert!(!wt.join("client/Assets/Ugc").exists());
+    assert!(!wt.join("client/Assets/deep/Cache").exists());
+    assert_eq!(
+        fs::read_to_string(wt.join("client/Assets/deep/er/b.txt")).unwrap(),
+        "committed b\n"
+    );
+    // What both branches ignore still travels.
+    assert!(wt.join("client/Library/ArtifactDB").exists());
+    assert!(wt.join("client/Assets/Generated/config.json").exists());
+    let warning = outcome
+        .warnings
+        .iter()
+        .find(|warning| warning.contains("this branch does not"))
+        .expect("the user is told what stayed behind");
+    assert!(warning.contains("client/Assets/Ugc/"), "{warning}");
+    // The source keeps its own copy.
+    assert!(repo.join("client/Assets/Ugc/Dev/big.asset").exists());
+    assert!(repo.join("client/Assets/deep/Cache/baked.bin").exists());
+}
+
 #[test]
 fn keeps_timestamps_of_tracked_and_cached_files() {
     let (_temp, repo) = unity_repo();
